@@ -1,0 +1,22 @@
+{
+  "identities": [
+    {
+      "name": "alice",
+      "privHex": "ae6de78d4d0b4be7a868d020d524eb9c486853ca29a173dfdf7b31250aac436d",
+      "pubHex": "035f5c2575643f32a5ffd4ceb31382127ad268808bcb03d68c2105e1ef2aacc747",
+      "address": "0xcd0e8795adcc8c38daea611080b1ad39451b88eb"
+    },
+    {
+      "name": "bob",
+      "privHex": "900fe1a774c9fc2ad48d35a2d0555cb4ddf50b278f5d122e3edfdb779be3da08",
+      "pubHex": "02b78d4ae34d42e7a5915bf6a85978a91ebdaf93cb74e856f947af4af5d879fe9a",
+      "address": "0xdda9da7e24687b4fd3ee3377e80d1df8c6da7d7d"
+    },
+    {
+      "name": "carol",
+      "privHex": "f9aac2d5c841682447e3eb17ae1b1d00ec21fba8a1256eb055f993bd9a71c237",
+      "pubHex": "0247309dc936ae45a19210add1b6af4d6fcf0827b7c72c60cc980b86f365784658",
+      "address": "0xf1dce2ff5ea5b9bcd5d6814e065eecd5cb3d5fea"
+    }
+  ]
+}

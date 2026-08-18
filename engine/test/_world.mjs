@@ -1,7 +1,14 @@
 // _world.mjs — seeded world generation shared by convergence.test.mjs and
 // gen-fixtures.mjs (single source of truth for the random-world model).
+//
+// P2: responses are REAL ECIES-sealed blobs (crypto.mjs) addressed to the form's
+// creator — deterministic via fixed ephPriv + derived nonce, so golden vectors
+// reproduce byte-for-byte. The fold sees them as opaque; creatorView tests open
+// them with the creator's key.
 
-import { evFormPublish, evResponseSubmit, evResponseConfirm, evFormClose, evFormResults } from "../../contract/src/events.mjs";
+import { createHash } from "node:crypto";
+import { evFormPublish, evResponseSubmit, evResponseConfirm, evFormClose } from "../../contract/src/events.mjs";
+import { identityFromPriv, sealToCreator, toHex } from "../../contract/src/crypto.mjs";
 
 export function mulberry32(seed) {
   let a = seed >>> 0;
@@ -14,20 +21,31 @@ export function mulberry32(seed) {
 }
 const ri = (rng, n) => Math.floor(rng() * n); // int in [0, n)
 const pick = (rng, arr) => arr[ri(rng, arr.length)];
+const sha = (s) => createHash("sha256").update(s).digest();
 
-// Fake identities (no real keys in P1 — addresses are opaque strings).
+// Fake address (no key material — for non-creator adversarial events).
 export const addr = (n) => "0x" + n.toString(16).padStart(40, "0");
 
+/** Fixed test identities: stable across runs & seeds (golden-vector friendly). */
+const IDENTITY_POOL = [];
+function identityAt(i) {
+  if (!IDENTITY_POOL[i]) {
+    IDENTITY_POOL[i] = identityFromPriv(sha("whisperbox-world-identity-" + i));
+  }
+  return IDENTITY_POOL[i];
+}
+
 /** Builds a random world of events with deliberate edge cases:
- *  - resubmissions (same id, different payload → min-HLC conflict rule)
- *  - responses/closes/results stamped BEFORE the form's publish HLC (deferred)
+ *  - resubmissions (same respondent, different answers → new content-addressed id;
+ *    creator view keeps min-HLC per respondent)
+ *  - responses/closes stamped BEFORE the form's publish HLC (deferred gated replay)
  *  - not-creator gated events (dropped)
- *  - responses after close (dropped 'form-closed')
- *  - duplicate results (LWW supersede) */
+ *  - responses after close (creator-view 'form-closed' drops)
+ *  - undecryptable blobs for the queried creator (other creators' forms) */
 export function generateWorld(rng, seed) {
   const nCreators = 1 + ri(rng, 3);
-  const creators = Array.from({ length: nCreators }, (_, i) => addr(0x100 + i));
-  const respondents = Array.from({ length: 3 + ri(rng, 6) }, (_, i) => addr(0x500 + i));
+  const creatorIds = Array.from({ length: nCreators }, (_, i) => identityAt(0x100 + i));
+  const respondentIds = Array.from({ length: 3 + ri(rng, 6) }, (_, i) => identityAt(0x500 + i));
   const devices = ["dev-a", "dev-b", "dev-c"];
 
   // Realistic clock model: one real-time line advancing 0..49ms per event; each
@@ -48,52 +66,65 @@ export function generateWorld(rng, seed) {
     return { wall: c.wall, ctr: c.ctr, dev };
   };
 
+  // Seal a response to the form creator — deterministic per (seed, form, respondent, r).
+  const sealResponse = (creatorId, respondentId, formId, r, resub = false) => {
+    const ephPriv = sha("eph|" + seed + "|" + formId + "|" + respondentId.address + "|" + r);
+    const body = JSON.stringify({
+      formId,
+      respondent: respondentId.address,
+      submittedAt: null, // filled by caller with the event wall (kept in answers for realism)
+      answers: [
+        { questionId: "q0a", value: resub ? "RESUB" : "answer-" + r },
+        { questionId: "q0b", value: resub ? 1 : 0 },
+      ],
+      signature: rng() < 0.7 ? "sig-resp-" + formId + "-" + r : null,
+    });
+    return toHex(sealToCreator(respondentId, creatorId.pubHex, body, { ephPriv, deterministic: true }));
+  };
+
   const events = [];
   const forms = [];
   const nForms = 1 + ri(rng, 4);
   for (let i = 0; i < nForms; i++) {
-    const creator = pick(rng, creators);
+    const creatorId = pick(rng, creatorIds);
     const formId = `f-${seed}-${i}`;
+    const whitelistOn = rng() < 0.5;
     const form = {
       id: formId,
       title: `Form ${i} (${seed})`,
       description: "desc",
-      creator,
-      publicKey: "02" + formId.replace(/[^a-z0-9]/gi, "").padEnd(64, "ab").slice(0, 64),
+      creator: creatorId.address,
+      publicKey: creatorId.pubHex, // REAL compressed pubkey — seals address to it
       createdAt: now + 1,
       expiresAt: rng() < 0.3 ? now + 86_400_000 : undefined,
       questions: [
-        { id: `q${i}a`, type: "text", text: "name?", required: true },
-        { id: `q${i}b`, type: rng() < 0.5 ? "radioButtons" : "checkbox", text: "pick", required: false, options: ["x", "y"] },
+        { id: "q0a", type: "text", text: "name?", required: true },
+        { id: "q0b", type: rng() < 0.5 ? "radioButtons" : "checkbox", text: "pick", required: false, options: ["x", "y"] },
       ],
-      whitelist: pick(rng, [
-        { type: "none", value: "" },
-        { type: "addresses", value: respondents[0] + "," + (respondents[1] ?? "") },
-      ]),
+      whitelist: whitelistOn
+        ? { type: "addresses", value: respondentIds[0].address + "," + (respondentIds[1]?.address ?? "") }
+        : { type: "none", value: "" },
       signature: rng() < 0.8 ? "sig-form-" + formId : null, // some unsigned (permissive admit)
     };
     const hlc = stamp(pick(rng, devices));
     events.push(evFormPublish({ hlc, dev: hlc.dev, form }));
-    forms.push({ formId, creator, publishHlc: hlc });
+    forms.push({ formId, creator: creatorId.address, publishHlc: hlc });
 
     // Responses from a random subset of respondents (real-time order; skew may
     // invert their HLCs relative to the publish — that's the point).
-    const nResp = ri(rng, respondents.length + 1);
+    const nResp = ri(rng, respondentIds.length + 1);
     for (let r = 0; r < nResp; r++) {
-      const respondent = pick(rng, respondents);
+      const respondentId = pick(rng, respondentIds);
       const rhlc = stamp(pick(rng, devices));
-      const payload = {
-        formId, respondent, submittedAt: rhlc.wall,
-        encryptedPayload: "sealed:" + formId + ":" + respondent + ":" + r,
-        signature: rng() < 0.7 ? "sig-resp-" + formId + "-" + respondent : null,
-      };
-      events.push(evResponseSubmit({ hlc: rhlc, dev: rhlc.dev, ...payload }));
-      // Resubmission edge case: ~15% → same id, different payload, later HLC.
+      const encryptedPayload = sealResponse(creatorId, respondentId, formId, r);
+      events.push(evResponseSubmit({ hlc: rhlc, dev: rhlc.dev, encryptedPayload }));
+      // Resubmission edge case: ~15% → same respondent, DIFFERENT answers → new
+      // content-addressed id; creator view keeps the min-HLC one per respondent.
       if (rng() < 0.15) {
         const rhlc2 = stamp(rhlc.dev); // same device, strictly later HLC
         events.push(evResponseSubmit({
-          hlc: rhlc2, dev: rhlc2.dev, formId, respondent, submittedAt: rhlc2.wall,
-          encryptedPayload: "sealed:RESUB:" + formId + ":" + respondent, signature: null,
+          hlc: rhlc2, dev: rhlc2.dev,
+          encryptedPayload: sealResponse(creatorId, respondentId, formId, r, true),
         }));
       }
     }
@@ -103,31 +134,24 @@ export function generateWorld(rng, seed) {
       const nConf = ri(rng, 3);
       for (let c = 0; c < nConf; c++) {
         const chlc = stamp(pick(rng, devices));
-        events.push(evResponseConfirm({ hlc: chlc, dev: chlc.dev, formId, confirmationId: `conf-${seed}-${i}-${c}`, author: creator }));
+        events.push(evResponseConfirm({ hlc: chlc, dev: chlc.dev, formId, confirmationId: `conf-${seed}-${i}-${c}`, author: creatorId.address }));
       }
     }
 
     // Close (sticky) — ~40% of forms.
     if (rng() < 0.4) {
       const chlc = stamp(pick(rng, devices));
-      events.push(evFormClose({ hlc: chlc, dev: chlc.dev, formId, expiresAt: rng() < 0.3 ? now + 999_999 : undefined, author: creator }));
+      events.push(evFormClose({ hlc: chlc, dev: chlc.dev, formId, expiresAt: rng() < 0.3 ? now + 999_999 : undefined, author: creatorId.address }));
       // Late response (real-time after the close; skew may reorder — both
       // outcomes must converge). Dedicated device keeps its HLC unique.
       if (rng() < 0.5) {
-        const respondent = pick(rng, respondents);
+        const respondentId = pick(rng, respondentIds);
         const lateDev = `dev-late-${seed}-${i}`;
         const rhlc = stamp(lateDev);
-        events.push(evResponseSubmit({ hlc: rhlc, dev: rhlc.dev, formId, respondent, submittedAt: rhlc.wall, encryptedPayload: "sealed:late", signature: null }));
-      }
-    }
-
-    // Results — ~30% of forms; ~50% of those get a SECOND (superseding) result.
-    if (rng() < 0.3) {
-      const r1 = stamp(pick(rng, devices));
-      events.push(evFormResults({ hlc: r1, dev: r1.dev, formId, resultsJson: JSON.stringify({ n: 1 }), author: creator }));
-      if (rng() < 0.5) {
-        const r2 = stamp(r1.dev); // same device, strictly later HLC → LWW winner
-        events.push(evFormResults({ hlc: r2, dev: r2.dev, formId, resultsJson: JSON.stringify({ n: 2 }), author: creator }));
+        events.push(evResponseSubmit({
+          hlc: rhlc, dev: rhlc.dev,
+          encryptedPayload: sealResponse(creatorId, respondentId, formId, 900 + i),
+        }));
       }
     }
   }
@@ -139,7 +163,7 @@ export function generateWorld(rng, seed) {
     events.push(evFormClose({ hlc, dev: hlc.dev, formId: f.formId, author: addr(0x999) })); // not the creator
   }
 
-  return { creators, events };
+  return { creators: creatorIds.map((c) => c.address), creatorObjs: creatorIds, respondentIds, events };
 }
 
 /** Partition a world into per-device logs with shuffled order + redelivery. */
@@ -157,4 +181,3 @@ export function partitionLogs(rng, events, nDevices = 3) {
   }
   return logs;
 }
-

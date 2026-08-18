@@ -1,0 +1,44 @@
+{
+  "seals": [
+    {
+      "id": "seal-0",
+      "creatorName": "bob",
+      "respondentName": "alice",
+      "ephPrivHex": "e7bec2b5cdf36ed94038cfa52e6606c7f34ba2bcbf324948cecdbd83658d2105",
+      "plaintext": "hello whisperbox",
+      "sealedHex": "010235ef1ffe4a4ac141d7f5e885c30a82ed5da6e03bf03f14fe9797679c0d360dd422dc752effe88a79fea77b610d1fe02aec62d9649a434d104ddd13f1e31a5b936aa70f4fd08c92cd94c9f781"
+    },
+    {
+      "id": "seal-1",
+      "creatorName": "bob",
+      "respondentName": "alice",
+      "ephPrivHex": "9b970a934acf67db447d595b64b5336842ce7f9d59b580942cd730acc0a66ece",
+      "plaintext": "čůtek — ěšč 🤖 unicode round-trip",
+      "sealedHex": "01031093e293889c47bc2ca9a66f966007c1cb871160335dfb17268b835c48a0231a4f084b52b94f6fadf7ab0f55ee992d13773c7276734a1b4956a9f1bbdb0fb25753b0504ff2853812ddda0ba3b38a8e8b6e9774a0a6d49ee992d72879d3a78a3e86c2a0ab21a7"
+    },
+    {
+      "id": "seal-2",
+      "creatorName": "bob",
+      "respondentName": "alice",
+      "ephPrivHex": "860bbc6869e36ea6c36c8392815e7309a60fbd80c5b39e878f74160de88e7e92",
+      "plaintext": "",
+      "sealedHex": "010212acecd82a7313a39759ed0b69664c1e1c6fec57d590cde700e60083d4a93ba9611fdc68dad61939f2665de72bd7163f9b01e193f17d85921ad8f7fb"
+    },
+    {
+      "id": "seal-3",
+      "creatorName": "bob",
+      "respondentName": "alice",
+      "ephPrivHex": "f974b53f3d1c44024a0b8dbf1147b41961cc5f1547afae544301a33fc7f4efdf",
+      "plaintext": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "sealedHex": "010375b84b90f4dc32c80020832dde8324506b5b8cc9758723637a631427b34abcae68fbaf5b9d5067556b66cfe287c40cb6bf2e75bdffff7b5eb93b82f516a295db0ff320028aa234c21619e7a94c65429e82ee5eff80df021fc8acc40bd1bdc328e365266180b87d830cb38010b4ed59f7b2803b3d623217b2185cb99a49ab31e0a8d5023a9ca75c4513f587b1ab10f7394f7bc8eb1dedc64c2d1fa854088eaef51bbe93a3d461dafdcc89367f9bd42cedf83b6ad9cfeb248a8bedc3291b873b5e287228fb7b325c9d52a5921772e30791f1840b4df4110870f9f7c1a88f18cce87f0e4ce149cf2387f1637e0b50b56fe65973f0a359e111bfe9838135ce25cd433ab2dfc5480d057ca30c4bc4f9feecc1d60be4e32cec7bde505f88d3508513722772ac210c2b3d3405b4207e2b859862e7eea321674478a799ef23eea0bb14db2b779ba022e09e129c8859a674320d7e0bbcdb9405b8d9e392fe1dc8c5eeeeb63df751645f7d4e5959c94e73c46c3c80fa79a56d52bed8e69340bcca821bb662d05ab1537f08cad3b295f5feaf623766277c3ccffbc82efde5d17dcf0845deb86ec24c88b4726151d7dfc7634fa90476d25734b832afb5a4b4a573c024b98daac66f576b893105cb7a6710abc58b190c2e1e85175b27e00df5fa141b8ed70dda15a0907f032cc3791fa265f83c0ddbe53edbc39319779c9e76165480566e116320ca0a824e7273813646dadde558c3c4da0b4edef12452ddad34456e73abfe83d5306f4f3f945549a68d8a3d48e03868"
+    },
+    {
+      "id": "seal-4",
+      "creatorName": "bob",
+      "respondentName": "alice",
+      "ephPrivHex": "b2bd7e6644f9d32066d63fde7c73648a86af54196879d495bdad06722aac7991",
+      "plaintext": "{\"formId\":\"parity-f1\",\"respondent\":\"0xdda9da7e24687b4fd3ee3377e80d1df8c6da7d7d\",\"submittedAt\":1700000000500,\"answers\":[{\"questionId\":\"q1\",\"value\":\"Václav\"}],\"signature\":\"sig-parity\"}",
+      "sealedHex": "0102be36febe53204d1910a7ca29a540426f0b888e5c73d7e0ecf501ff69fc0dba32c4541fedec1f642edf56bffabe8a5d91cdd285704ed40d6573b856e091dad1dcd9c9cedadee097107dad5a039808965ca64b9e266b9bb0cd40499eac24587ff69716f6e358e092dc0ff208dd2bcb72cc64a0595378d2f40dfa83c50dfaea08b1ab760a870afde919bfea41edea5c8cd1745481896a6d348558084fdd5b77a42c762f2cc1771e76bba99029226237e253193ee3f0d3235aed41cd289161e3810384e2aac9235236022886458b1bd38461e052817206106a010f7ae6aef042847ab476fcfd73d9fec1ec31709bfad60958bf4277"
+    }
+  ]
+}

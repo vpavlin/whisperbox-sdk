@@ -1,0 +1,12 @@
+{
+  "name": "whisperbox-engine",
+  "version": "0.1.0",
+  "description": "WhisperBox event-log engine — pure, deterministic fold + invariants (TS reference; the C++ core must reproduce it exactly). Zero dependencies.",
+  "type": "module",
+  "main": "src/engine.mjs",
+  "scripts": {
+    "test": "node test/convergence.test.mjs",
+    "gen:fixtures": "node test/gen-fixtures.mjs"
+  },
+  "license": "(MIT OR Apache-2.0)"
+}

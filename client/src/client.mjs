@@ -97,6 +97,9 @@ export class WhisperboxClient {
   /** Drive from a ~1s timer: catch-up at 3s/10s/25s after connect, then every 60s;
    *  retries sends that failed while offline. */
   tick() {
+    try { this._tick(); } catch (e) { this.lastError = String(e?.message || e); }
+  }
+  _tick() {
     if (!this.nodeReady) return;
     const delays = [3000, 10000, 25000];
     const delay = this.syncTries >= 1 && this.syncTries <= 3 ? delays[this.syncTries - 1] : 60000;
@@ -127,8 +130,14 @@ export class WhisperboxClient {
   /** Feed every decode candidate of ONE received message (loam-transport hands these
    *  over). Returns true when one of them was a WhisperBox envelope. */
   ingest(candidates) {
+    // Never throw: this runs inside native event callbacks, where an escaping exception
+    // would take the app down. A bad message is counted and skipped.
+    try { return this._ingest(candidates); }
+    catch (e) { this.diag.rxErr = (this.diag.rxErr || 0) + 1; this.lastError = String(e?.message || e); return false; }
+  }
+  _ingest(candidates) {
     this.diag.rxRaw++;
-    for (const cand of candidates) {
+    for (const cand of candidates || []) {
       let text;
       try { text = C.utf8Decode(cand).trim(); } catch { continue; }
       for (const t of [text, (() => { try { return C.utf8Decode(b64decode(text)).trim(); } catch { return ""; } })()]) {
@@ -159,6 +168,7 @@ export class WhisperboxClient {
     }
     if (env.type === "EVENT" && env.event && typeof env.event === "object") {
       const e = env.event;
+      if (typeof e.id !== "string" || !e.hlc || typeof e.hlc !== "object" || !e.payload || typeof e.payload !== "object") { this.diag.admDropType++; return true; }
       if (!this.admit(e)) return true;
       if (mergeOne(this.log, e)) { this.diag.rxNew++; this.clock.receive(e.hlc); this.saveLog(); this.emit(); }
       else this.diag.rxDup++;

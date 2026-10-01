@@ -83,13 +83,27 @@ test("per-form keys: portable == node reference == golden; sealed-to-form opens 
     const d = P.deriveFormKey(byName[k.owner], k.formId);
     assert.strictEqual(d.pubHex, k.pubHex, `${k.owner}/${k.formId}`);
     assert.strictEqual(P.toHex(d.priv), k.privHex);
-    assert.strictEqual(P.formKeyIndex(k.formId), k.keycardIndex);
+    assert.strictEqual(P.keycardFormKeyPath(k.formId), k.keycardPath);
     assert.notStrictEqual(d.pubHex, byName[k.owner].pubHex, "form key != identity key");
-    assert.ok(k.keycardIndex < 2 ** 31);
+    assert.match(k.keycardPath, /^m\/43'\/60'\/1581'(\/\d+'){4}$/, "EIP-1581 subtree, 4 hardened indices");
   }
   assert.strictEqual(P.deriveFormKey(byName.bob, "FORM-UPPER").pubHex, P.deriveFormKey(byName.bob, "form-upper").pubHex, "case-insensitive form id");
   const fk = P.deriveFormKey(byName.bob, doc.formSeal.formId);
   assert.strictEqual(P.utf8Decode(P.eciesOpen(fk, doc.formSeal.sealedHex)), doc.formSeal.plaintext);
   assert.throws(() => P.eciesOpen(byName.bob, doc.formSeal.sealedHex), "identity key cannot open a form-key seal");
   assert.throws(() => P.eciesOpen(P.deriveFormKey(byName.bob, "form-639a2554"), doc.formSeal.sealedHex), "another form's key cannot");
+});
+
+test("keycard form-key path = the Loam domain-path convention (independent re-implementation)", () => {
+  // scala/mobile/src/lib/loam-keycard/paths.ts domainToKeyPath(domain), re-done from the spec:
+  const spec = (domain) => {
+    const h = createHash("sha256").update("logos-" + domain).digest();
+    return "m/43'/60'/1581'/" + [0, 4, 8, 12].map((o) => (h.readUInt32BE(o) & 0x7fffffff) + "'").join("/");
+  };
+  for (const id of ["form-639a2554", "Form-ABC", "form-žluť"]) {
+    assert.strictEqual(P.keycardFormKeyPath(id), spec("whisperbox-form:" + id.toLowerCase()));
+    assert.strictEqual(N.keycardFormKeyPath(id), P.keycardFormKeyPath(id));
+  }
+  // and the value Python's hashlib gives for the first id:
+  assert.strictEqual(P.keycardFormKeyPath("form-639a2554"), "m/43'/60'/1581'/11022128'/1577926826'/1799408082'/489631137'");
 });

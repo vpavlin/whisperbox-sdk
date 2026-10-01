@@ -63,7 +63,7 @@ export class WhisperboxClient {
   constructor(o) {
     this.store = o.store; this.secrets = o.secrets || o.store; this.sendRaw = o.send; this.now = o.now || (() => Date.now());
     this.log = []; this.watched = new Set(); this.pins = {}; this.mySubs = {}; // formId → my receipt id ("" = legacy)
-    this.identity = null; this.deviceId = ""; this.clock = null;
+    this.identity = null; this.deviceId = ""; this.clock = null; this.cardKeys = new Map();
     this.nodeReady = false; this.listeners = new Set();
     this.diag = { rxRaw: 0, rxNew: 0, rxDup: 0, txTotal: 0, txErr: 0, admDropSig: 0, admDropType: 0, rbsrRx: 0, legacyReseeds: 0 };
     this.syncTries = 0; this.lastSyncAt = 0; this.lastReserveAt = 0; this.unsent = new Set();
@@ -86,6 +86,13 @@ export class WhisperboxClient {
     this.watched = new Set(parse(await this.store.get("wb-watched"), []));
     this.pins = parse(await this.store.get("wb-pins"), {});
     this.mySubs = parse(await this.store.get("wb-mysubs"), {});
+    // Form keys that came from a Keycard (not derivable from the identity): one secret per
+    // form ("wb-fk-<formId>"), with the list of ids (not secret) in the plain store.
+    this.cardKeys = new Map();
+    for (const fid of parse(await this.store.get("wb-fk-index"), [])) {
+      const k = C.identityFromPriv((await this.secrets.get("wb-fk-" + fid)) || "");
+      if (k) this.cardKeys.set(fid, k);
+    }
     this.emit();
   }
   /** Call when the transport is up (and again after any reconnect). */
@@ -207,13 +214,41 @@ export class WhisperboxClient {
   adopt(e) { if (mergeOne(this.log, e)) { this.clock.receive(e.hlc); this.saveLog(); } this.broadcast(e); this.emit(); }
   state() { return computeState(this.log, { identity: this.identity.address, prefer: this.pins }); }
 
-  createForm(def) {
+  newFormId() { return "form-" + C.randomHex(4); }
+  /** Store a form key that did not come from the identity (exported from a Keycard). Saved
+   *  BEFORE the form is published, so a form is never out there without its key here. */
+  async addFormKey(formId, privHex) {
+    const fid = lc(formId);
+    const k = C.identityFromPriv(privHex || "");
+    if (!fid || !k) return { ok: false, error: "invalid form key" };
+    const f = this.state().forms[fid];
+    if (f && f.publicKey && f.publicKey !== k.pubHex) return { ok: false, error: "this key does not belong to that form (different Keycard?)" };
+    await this.secrets.set("wb-fk-" + fid, C.toHex(k.priv));
+    this.cardKeys.set(fid, k);
+    await this.store.set("wb-fk-index", JSON.stringify([...this.cardKeys.keys()]));
+    this.emit();
+    return { ok: true, pubHex: k.pubHex };
+  }
+  /** My forms whose answers I cannot open on this device (e.g. Keycard forms after a reinstall). */
+  formsMissingKeys(st = this.state()) {
+    const keys = this.formKeys(st);
+    return Object.values(st.forms).filter((f) => f.creator === this.identity.address && f.publicKey && !keys.has(f.publicKey)).map((f) => f.id);
+  }
+
+  /** opts.publicKey: seal to a key stored with addFormKey (Keycard) instead of the derived one. */
+  createForm(def, opts = {}) {
     if (!def || typeof def !== "object") return { ok: false, error: "def must be an object" };
-    const formId = lc(def.id) || "form-" + C.randomHex(4);
+    const formId = lc(def.id) || this.newFormId();
+    let publicKey = C.deriveFormKey(this.identity, formId).pubHex;
+    if (opts.publicKey) {
+      const ck = this.cardKeys.get(formId);
+      if (!ck || ck.pubHex !== opts.publicKey) return { ok: false, error: "form key not stored on this device - not publishing a form nobody could read" };
+      publicKey = ck.pubHex;
+    }
     const p = {
       id: formId, title: def.title || "", description: def.description || "",
-      // Sealing key = this form's OWN key, derived from the identity (see crypto-portable.mjs).
-      creator: this.identity.address, publicKey: C.deriveFormKey(this.identity, formId).pubHex, createdAt: this.now(),
+      // Sealing key = this form's OWN key: derived from the identity, or exported from a Keycard.
+      creator: this.identity.address, publicKey, createdAt: this.now(),
       expiresAt: def.expiresAt ?? null, questions: Array.isArray(def.questions) ? def.questions : [],
       whitelist: def.whitelist || { type: "none", value: "" },
     };
@@ -299,6 +334,8 @@ export class WhisperboxClient {
     this._derived = this._derived || new Map();
     for (const f of Object.values(st.forms)) {
       if (f.creator !== this.identity.address || !f.publicKey) continue;
+      const ck = this.cardKeys.get(f.id);
+      if (ck && ck.pubHex === f.publicKey) { keys.set(ck.pubHex, ck); continue; }
       if (f.publicKey === this.identity.pubHex) { keys.set(f.publicKey, this.identity); continue; }
       let k = this._derived.get(f.id);
       if (!k) { k = C.deriveFormKey(this.identity, f.id); this._derived.set(f.id, k); }
@@ -343,6 +380,7 @@ export class WhisperboxClient {
         for (const r of list) r.confirmed = confs.includes(confirmIdOf(r, fid));
       }
     }
+    const missing = new Set(this.formsMissingKeys(st));
     for (const [fid, f] of Object.entries(st.forms)) {
       const mine = f.creator === this.identity.address;
       const submitted = fid in this.mySubs;
@@ -357,6 +395,8 @@ export class WhisperboxClient {
         contested, pinnedCreator: pin || null, linkMismatch, mine, mySubmitted: submitted,
         myConfirmed: submitted && (f.confirmations || []).includes(cid), allowed,
         canRespond: trusted && !mine && !submitted && allowed && f.status === "open" && !!f.publicKey,
+        // mine, but no key here to open its answers (Keycard form on a new install): tap to restore
+        keyMissing: missing.has(fid), keycard: this.cardKeys.has(fid),
       });
     }
     return {

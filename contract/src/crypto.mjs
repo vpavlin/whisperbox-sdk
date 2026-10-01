@@ -173,8 +173,10 @@ export function deriveFormKey(identity, formId) {
   }
   throw new Error("form key derivation failed");
 }
-export function formKeyIndex(formId) {
-  return createHash("sha256").update("whisperbox-formkey-v1|" + String(formId).toLowerCase()).digest().readUInt32BE(0) & 0x7fffffff;
+export function keycardFormKeyPath(formId) {
+  const h = createHash("sha256").update("logos-whisperbox-form:" + String(formId).toLowerCase()).digest();
+  const at = (o) => h.readUInt32BE(o) & 0x7fffffff;
+  return `m/43'/60'/1581'/${at(0)}'/${at(4)}'/${at(8)}'/${at(12)}'`;
 }
 const sha256b = (b) => createHash("sha256").update(b).digest();
 

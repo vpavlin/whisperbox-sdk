@@ -67,8 +67,11 @@ export const randomHex = (n) => bytesToHex(randomBytes(n));
 //   soft (identity key on the device):
 //     formPriv = first valid scalar of HKDF-SHA256(ikm=identityPriv, salt="whisperbox-formkey-v1",
 //                info=utf8(formId) [|| "#" || i for retry i>=1], L=32)
-//   keycard: exported from the EIP-1581 subtree, m/43'/60'/1581'/22338'/formKeyIndex(formId)'
-//     formKeyIndex = u32be(sha256("whisperbox-formkey-v1|" || formId)[0..4]) & 0x7fffffff
+//   keycard: exported from the EIP-1581 subtree (the only one a card lets out) using the Loam
+//     domain-path convention shared with scala and the Basecamp keycard module:
+//       domain = "whisperbox-form:" || lower(formId)
+//       idx    = sha256("logos-" || domain)[0..16] as four u32be, each & 0x7fffffff
+//       path   = m/43'/60'/1581'/idx0'/idx1'/idx2'/idx3'
 // Respondents are unaffected: they always sealed to the form's publicKey. Legacy forms
 // (publicKey == identity pub) keep opening with the identity key.
 const FORMKEY_SALT = utf8ToBytes("whisperbox-formkey-v1");
@@ -81,11 +84,11 @@ export function deriveFormKey(identity, formId) {
   }
   throw new Error("form key derivation failed");
 }
-export function formKeyIndex(formId) {
-  const h = sha256(utf8ToBytes("whisperbox-formkey-v1|" + String(formId).toLowerCase()));
-  return ((h[0] << 24) | (h[1] << 16) | (h[2] << 8) | h[3]) & 0x7fffffff;
+export function keycardFormKeyPath(formId) {
+  const h = sha256(utf8ToBytes("logos-whisperbox-form:" + String(formId).toLowerCase()));
+  const at = (o) => ((h[o] << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3]) & 0x7fffffff;
+  return `m/43'/60'/1581'/${at(0)}'/${at(4)}'/${at(8)}'/${at(12)}'`;
 }
-export const FORMKEY_KEYCARD_PATH = (formId) => `m/43'/60'/1581'/22338'/${formKeyIndex(formId)}'`;
 
 // ── Canonical JSON (sorted keys, compact) — matches crypto.mjs cjson and C++ ─────
 export function cjson(v) {

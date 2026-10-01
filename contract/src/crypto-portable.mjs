@@ -60,6 +60,33 @@ export function generateIdentity() {
 }
 export const randomHex = (n) => bytesToHex(randomBytes(n));
 
+// ── Per-form encryption keys ─────────────────────────────────────────────────────
+// Every form gets its OWN sealing key (form.publish payload.publicKey), never the creator's
+// identity key. A leaked form key opens one form's answers - not the identity (which signs)
+// and not any other form - so one form's key can be handed to a validator hub.
+//   soft (identity key on the device):
+//     formPriv = first valid scalar of HKDF-SHA256(ikm=identityPriv, salt="whisperbox-formkey-v1",
+//                info=utf8(formId) [|| "#" || i for retry i>=1], L=32)
+//   keycard: exported from the EIP-1581 subtree, m/43'/60'/1581'/22338'/formKeyIndex(formId)'
+//     formKeyIndex = u32be(sha256("whisperbox-formkey-v1|" || formId)[0..4]) & 0x7fffffff
+// Respondents are unaffected: they always sealed to the form's publicKey. Legacy forms
+// (publicKey == identity pub) keep opening with the identity key.
+const FORMKEY_SALT = utf8ToBytes("whisperbox-formkey-v1");
+export function deriveFormKey(identity, formId) {
+  const fid = String(formId).toLowerCase();
+  for (let i = 0; i < 8; i++) {
+    const info = utf8ToBytes(i ? fid + "#" + i : fid);
+    const id = identityFromPriv(hkdf(sha256, identity.priv, FORMKEY_SALT, info, 32));
+    if (id) return id;
+  }
+  throw new Error("form key derivation failed");
+}
+export function formKeyIndex(formId) {
+  const h = sha256(utf8ToBytes("whisperbox-formkey-v1|" + String(formId).toLowerCase()));
+  return ((h[0] << 24) | (h[1] << 16) | (h[2] << 8) | h[3]) & 0x7fffffff;
+}
+export const FORMKEY_KEYCARD_PATH = (formId) => `m/43'/60'/1581'/22338'/${formKeyIndex(formId)}'`;
+
 // ── Canonical JSON (sorted keys, compact) — matches crypto.mjs cjson and C++ ─────
 export function cjson(v) {
   if (v === null || v === undefined) return "null";

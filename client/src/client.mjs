@@ -212,7 +212,8 @@ export class WhisperboxClient {
     const formId = lc(def.id) || "form-" + C.randomHex(4);
     const p = {
       id: formId, title: def.title || "", description: def.description || "",
-      creator: this.identity.address, publicKey: this.identity.pubHex, createdAt: this.now(),
+      // Sealing key = this form's OWN key, derived from the identity (see crypto-portable.mjs).
+      creator: this.identity.address, publicKey: C.deriveFormKey(this.identity, formId).pubHex, createdAt: this.now(),
       expiresAt: def.expiresAt ?? null, questions: Array.isArray(def.questions) ? def.questions : [],
       whitelist: def.whitelist || { type: "none", value: "" },
     };
@@ -291,10 +292,44 @@ export class WhisperboxClient {
   resync() { if (!this.nodeReady) return { ok: false, error: "not connected" }; this.requestSync(); this.catchupRound(); return { ok: true }; }
 
   // ── read side (same shape as the core's snapshot) ──────────────────────────────
+  // Opening keys for MY forms, by sealing pubkey: the form's own derived key, or the identity
+  // key for legacy (0.2.0-and-earlier) forms whose publicKey is the identity pub.
+  formKeys(st) {
+    const keys = new Map();
+    this._derived = this._derived || new Map();
+    for (const f of Object.values(st.forms)) {
+      if (f.creator !== this.identity.address || !f.publicKey) continue;
+      if (f.publicKey === this.identity.pubHex) { keys.set(f.publicKey, this.identity); continue; }
+      let k = this._derived.get(f.id);
+      if (!k) { k = C.deriveFormKey(this.identity, f.id); this._derived.set(f.id, k); }
+      if (k.pubHex === f.publicKey) keys.set(k.pubHex, k);
+    }
+    return keys;
+  }
+  // Trial-open against every key (a sealed blob does not say which form it is for - on
+  // purpose, that would publish per-form answer counts). Results are cached per blob; a miss
+  // is retried only when the key set grows.
+  openWith(keys, st, hex) {
+    this._opened = this._opened || new Map();
+    const c = this._opened.get(hex);
+    if (c && (c.dec || c.nKeys === keys.size)) return c.dec;
+    let dec = null;
+    for (const k of keys.values()) {
+      let pt; try { pt = C.eciesOpen(k, hex); } catch { continue; }
+      try { dec = JSON.parse(C.utf8Decode(pt)); } catch { dec = null; break; }
+      // The key that opened it must be the sealing key of the form it claims to answer.
+      const f = dec && st.forms[String(dec.formId ?? "").toLowerCase()];
+      if (!f || f.publicKey !== k.pubHex) dec = null;
+      break;
+    }
+    this._opened.set(hex, { dec, nKeys: keys.size });
+    return dec;
+  }
   decrypt(st) {
+    const keys = this.formKeys(st);
     return creatorView(st, {
       identity: this.identity.address,
-      open: (hex) => { try { return JSON.parse(C.utf8Decode(C.eciesOpen(this.identity, hex))); } catch { return null; } },
+      open: (hex) => this.openWith(keys, st, hex),
       verifyResponse: (pseudo) => C.verifyInner(pseudo.payload),
     });
   }

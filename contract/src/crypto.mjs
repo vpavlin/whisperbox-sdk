@@ -163,6 +163,19 @@ export function ecdhX(priv32, pub33) {
 
 // ── ECIES seal / open ──────────────────────────────────────────────────────────────
 const hkdf = (ikm, salt, info, len) => Buffer.from(hkdfSync("sha256", ikm, salt, info, len));
+
+/** Per-form sealing key (see crypto-portable.mjs for the scheme). Node reference impl. */
+export function deriveFormKey(identity, formId) {
+  const fid = String(formId).toLowerCase();
+  for (let i = 0; i < 8; i++) {
+    const id = identityFromPriv(hkdf(Buffer.from(identity.priv), Buffer.from("whisperbox-formkey-v1"), Buffer.from(i ? fid + "#" + i : fid, "utf8"), 32));
+    if (id) return id;
+  }
+  throw new Error("form key derivation failed");
+}
+export function formKeyIndex(formId) {
+  return createHash("sha256").update("whisperbox-formkey-v1|" + String(formId).toLowerCase()).digest().readUInt32BE(0) & 0x7fffffff;
+}
 const sha256b = (b) => createHash("sha256").update(b).digest();
 
 /** Seal `plaintext` to a creator. opts: { ephPriv?, deterministic? } — both default

@@ -74,3 +74,22 @@ test("responseSubmitId is sha256 of the hex blob (matches node:crypto)", () => {
   const hex = "01abcdef";
   assert.strictEqual(responseSubmitId(hex), "resp:" + createHash("sha256").update(hex, "utf8").digest("hex"));
 });
+
+test("per-form keys: portable == node reference == golden; sealed-to-form opens only with the form key", () => {
+  const doc = JSON.parse(readFileSync(join(fx, "crypto-formkeys.json"), "utf8"));
+  const idDoc = JSON.parse(readFileSync(join(fx, "crypto-identities.json"), "utf8"));
+  const byName = Object.fromEntries(idDoc.identities.map((i) => [i.name, P.identityFromPriv(i.privHex)]));
+  for (const k of doc.formKeys) {
+    const d = P.deriveFormKey(byName[k.owner], k.formId);
+    assert.strictEqual(d.pubHex, k.pubHex, `${k.owner}/${k.formId}`);
+    assert.strictEqual(P.toHex(d.priv), k.privHex);
+    assert.strictEqual(P.formKeyIndex(k.formId), k.keycardIndex);
+    assert.notStrictEqual(d.pubHex, byName[k.owner].pubHex, "form key != identity key");
+    assert.ok(k.keycardIndex < 2 ** 31);
+  }
+  assert.strictEqual(P.deriveFormKey(byName.bob, "FORM-UPPER").pubHex, P.deriveFormKey(byName.bob, "form-upper").pubHex, "case-insensitive form id");
+  const fk = P.deriveFormKey(byName.bob, doc.formSeal.formId);
+  assert.strictEqual(P.utf8Decode(P.eciesOpen(fk, doc.formSeal.sealedHex)), doc.formSeal.plaintext);
+  assert.throws(() => P.eciesOpen(byName.bob, doc.formSeal.sealedHex), "identity key cannot open a form-key seal");
+  assert.throws(() => P.eciesOpen(P.deriveFormKey(byName.bob, "form-639a2554"), doc.formSeal.sealedHex), "another form's key cannot");
+});

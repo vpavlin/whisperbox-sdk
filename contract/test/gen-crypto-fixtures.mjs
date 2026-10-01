@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
-import { identityFromPriv, signEvent, sealToCreator, toHex } from "../src/crypto.mjs";
+import { identityFromPriv, signEvent, sealToCreator, toHex, deriveFormKey, formKeyIndex } from "../src/crypto.mjs";
 import { evFormPublish, evResponseConfirm, evFormClose } from "../src/events.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -68,5 +68,18 @@ const sealed = plaintexts.map((pt, i) => {
   };
 });
 writeFileSync(join(here, "fixtures", "crypto-sealed.json"), JSON.stringify({ seals: sealed }, null, 2) + "\n");
+
+// ── Per-form keys (soft derivation + keycard index) ─────────────────────────────────
+const formIds = ["form-639a2554", "parity-f1", "FORM-UPPER", "form-žluť"];
+const formKeys = [];
+for (const n of names) for (const formId of formIds) {
+  const k = deriveFormKey(ids[n], formId);
+  formKeys.push({ owner: n, formId, privHex: toHex(k.priv), pubHex: k.pubHex, keycardIndex: formKeyIndex(formId) });
+}
+// a sealed blob to a FORM key (not the identity key)
+const fk = deriveFormKey(bob, "parity-f1");
+const formSeal = { owner: "bob", formId: "parity-f1", plaintext: '{"formId":"parity-f1","answers":[]}',
+  sealedHex: toHex(sealToCreator(alice, fk.pubHex, '{"formId":"parity-f1","answers":[]}', { ephPriv: sha("parity-eph-form"), deterministic: true })) };
+writeFileSync(join(here, "fixtures", "crypto-formkeys.json"), JSON.stringify({ formKeys, formSeal }, null, 2) + "\n");
 
 console.log(`wrote crypto fixtures: ${names.length} identities, 3 signed events, ${sealed.length} sealed blobs`);

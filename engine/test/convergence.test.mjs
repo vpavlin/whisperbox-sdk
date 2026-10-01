@@ -11,7 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
-import { mergeWhisperbox } from "../../contract/src/merge.mjs";
+import { mergeWhisperbox, mergeOne } from "../../contract/src/merge.mjs";
 import { compareHlc } from "../../contract/src/hlc.mjs";
 import {
   EventType,
@@ -20,7 +20,7 @@ import {
   evResponseConfirm,
   evFormClose,
 } from "../../contract/src/events.mjs";
-import { identityFromPriv, sealToCreator, eciesOpen, toHex } from "../../contract/src/crypto.mjs";
+import { identityFromPriv, sealToCreator, eciesOpen, toHex, signEvent } from "../../contract/src/crypto.mjs";
 import { computeState, creatorView } from "../src/engine.mjs";
 import { checkInvariants } from "../src/oracle.mjs";
 import { mulberry32, generateWorld, partitionLogs, addr, goldenCreator } from "./_world.mjs";
@@ -230,6 +230,54 @@ function unitChecks() {
   assert.deepStrictEqual(v10.dropped.reasons, { "not-whitelisted": 1 });
 }
 
+// ── Id squatting: signed events are deduped by (id, signer) ──────────────────────
+function squatCheck() {
+  const C = identityFromPriv(sha("squat-creator")), X = identityFromPriv(sha("squat-attacker"));
+  const signed = (ident, e) => ({ ...e, ...signEvent(ident, e) });
+  const form = (ident, wall) => signed(ident, evFormPublish({ hlc: { wall, ctr: 0, dev: "d" }, dev: "d",
+    form: { id: "fs", title: "t", description: "", creator: ident.address, publicKey: ident.pubHex, createdAt: wall, questions: [], whitelist: { type: "none", value: "" }, signature: null } }));
+  const close = (ident, wall) => signed(ident, evFormClose({ hlc: { wall, ctr: 0, dev: "d" }, dev: "d", formId: "fs", author: ident.address }));
+  const genuine = [form(C, 100), close(C, 300)];
+  const forged = [form(X, 50), close(X, 200)];             // back-dated squat + forged close
+  for (const order of [[...forged, ...genuine], [...genuine, ...forged], [forged[1], genuine[1], genuine[0], forged[0]]]) {
+    const log = [];
+    for (const e of order) mergeOne(log, e);
+    assert.strictEqual(log.length, 4, "all four signed events kept (no shadowing)");
+    const st = computeState(log, { identity: C.address });
+    assert.strictEqual(st.forms.fs.contested, true, "squatted id is flagged contested");
+  }
+  // Per-device projection of a contested id: the back-dated squat (X) is "first".
+  {
+    const log = []; for (const e of [...genuine, ...forged]) mergeOne(log, e);
+    const asCreator = computeState(log, { identity: C.address });
+    assert.strictEqual(asCreator.forms.fs.creator, C.address, "the real creator still sees their own form");
+    assert.strictEqual(asCreator.forms.fs.status, "closed", "and their own close applies to it");
+    const pinned = computeState(log, { prefer: { fs: C.address } });
+    assert.strictEqual(pinned.forms.fs.creator, C.address, "a link-pinned respondent sees the genuine form");
+    const browsing = computeState(log, {});
+    assert.strictEqual(browsing.forms.fs.creator, X.address, "without a pin, the first copy shows...");
+    assert.strictEqual(browsing.forms.fs.contested, true, "...flagged contested");
+  }
+  // Without the squat, the genuine close lands even if a forged close arrived first.
+  const log = [];
+  for (const e of [forged[1], form(C, 100), close(C, 300)]) mergeOne(log, e);
+  const st = computeState(log, { identity: C.address });
+  assert.strictEqual(st.forms.fs.status, "closed", "forged close cannot block the creator's close");
+  assert.strictEqual(st.forms.fs.contested, undefined);
+}
+
+// ── Incremental merge (mergeOne — the live ingest path) must equal the batch merge ──
+function incrementalCheck() {
+  const rng = mulberry32(4242);
+  for (let t = 0; t < 50; t++) {
+    const { events } = generateWorld(rng, 1000 + t);
+    const shuffled = [...events].sort(() => rng() - 0.5);
+    const inc = [];
+    for (const e of shuffled) mergeOne(inc, e);
+    assert.deepStrictEqual(inc.map((e) => e.id), mergeWhisperbox(shuffled).map((e) => e.id), "mergeOne order == batch order");
+  }
+}
+
 // ── Golden vectors: seed 164 must reproduce the committed fixtures byte-for-byte ─
 function goldenCheck() {
   const seed = 164;
@@ -262,6 +310,10 @@ for (let trial = 0; trial < TRIALS; trial++) {
 }
 console.log(`convergence: ${TRIALS} trials × 6 arrival orders OK (${Date.now() - t0}ms)`);
 t0 = Date.now();
+squatCheck();
+console.log("id squatting: forged close/form can't shadow genuine events; squat flagged contested OK");
+incrementalCheck();
+console.log("incremental merge: 50 worlds, mergeOne == batch order OK");
 goldenCheck();
 console.log(`golden vectors (seed 164): byte-identical to fixtures (${Date.now() - t0}ms)`);
 console.log("ALL GREEN");

@@ -24,7 +24,9 @@
 //     decrypted responses (original whisperbox: client-side CSV export). Publishing
 //     aggregates to the topic would leak answer content.
 
-import { createHash } from "node:crypto";
+// Portable (Node, browsers, React Native): @noble hashing, no Node built-ins.
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils.js";
 
 export const TOPIC = "/whisperbox/1/all/proto";
 
@@ -54,7 +56,7 @@ export const formPublishId = (formId) => `form:${formId}`;
  *  resubmission with different answers is a DIFFERENT event (creator view keeps
  *  the earliest-HLC one per respondent). */
 export const responseSubmitId = (encryptedPayload) =>
-  `resp:${createHash("sha256").update(String(encryptedPayload), "utf8").digest("hex")}`;
+  `resp:${bytesToHex(sha256(utf8ToBytes(String(encryptedPayload))))}`;
 export const responseConfirmId = (formId, confirmationId) =>
   `confirm:${lc(formId)}:${confirmationId}`;
 export const formCloseId = (formId) => `close:${lc(formId)}`;

@@ -46,6 +46,11 @@ function drop(dropped, reason) {
 export function computeState(mergedLog, opts = {}) {
   const identity = opts.identity ? lc(opts.identity) : null;
   const verify = typeof opts.verify === "function" ? opts.verify : null;
+  // opts.prefer: { formId: creatorAddress } - creators pinned by the share links this
+  // device opened. Only consulted when a form id is CONTESTED (published by >1 creator).
+  const prefer = opts.prefer || {};
+  const alts = {}; // formId → { creator → FormView } for contending publishes (id squatting)
+  const closeHlcBy = {}; // "formId|creator" → close hlc (per contender)
 
   const forms = {}; // formId → FormView (inserted in HLC publish order)
   const formHlc = new Map(); // formId → publish event hlc (feed ordering)
@@ -59,8 +64,7 @@ export function computeState(mergedLog, opts = {}) {
     switch (e.type) {
       case EventType.FORM_PUBLISH: {
         const formId = lc(p.id);
-        if (forms[formId]) return; // same id ⇒ already folded (defensive)
-        forms[formId] = {
+        const newView = () => ({
           id: formId,
           title: p.title,
           description: p.description,
@@ -72,7 +76,21 @@ export function computeState(mergedLog, opts = {}) {
           whitelist: p.whitelist ?? { type: "none", value: "" },
           status: "open",
           confirmations: [],
-        };
+        });
+        if (forms[formId]) {
+          // Same form id from a DIFFERENT creator = id squatting. Every contender is folded
+          // on its own; the device later picks which one it shows (own > link-pinned >
+          // first) and all of them are flagged contested - clients never seal answers to a
+          // contested form unless the link pins that exact creator.
+          const c = lc(p.creator);
+          if (c !== forms[formId].creator) {
+            alts[formId] = alts[formId] || {};
+            if (!alts[formId][c]) alts[formId][c] = newView();
+            forms[formId].contested = true;
+          }
+          return;
+        }
+        forms[formId] = newView();
         formHlc.set(formId, e.hlc);
         // Lenient ordering: replay deferred gated events for this form in HLC order.
         const mine = [];
@@ -92,14 +110,19 @@ export function computeState(mergedLog, opts = {}) {
       case EventType.FORM_CLOSE: {
         if (verify && e.sig && !verify(e)) { drop(dropped, "sig-invalid"); return; }
         const formId = lc(p.formId);
-        const f = forms[formId];
+        let f = forms[formId];
         if (!f) { deferred.push(e); return; } // lenient: close/confirm may lead publish
-        if (lc(p.author) !== f.creator) { drop(dropped, "not-creator"); return; }
+        if (lc(p.author) !== f.creator) {
+          const alt = alts[formId] && alts[formId][lc(p.author)];
+          if (!alt) { drop(dropped, "not-creator"); return; }
+          f = alt; // a contender's own close/confirm applies to its own copy
+        }
         if (e.type === EventType.RESPONSE_CONFIRM) {
           if (!f.confirmations.includes(p.confirmationId)) f.confirmations.push(p.confirmationId);
         } else { // FORM_CLOSE — sticky, idempotent
           f.status = "closed";
-          closeHlc[formId] = e.hlc;
+          if (f === forms[formId]) closeHlc[formId] = e.hlc;
+          closeHlcBy[formId + "|" + f.creator] = e.hlc;
           if (p.expiresAt != null) f.expiresAt = p.expiresAt;
         }
         return;
@@ -110,6 +133,22 @@ export function computeState(mergedLog, opts = {}) {
   };
 
   for (const e of mergedLog) applyEvent(e);
+
+  // Contested ids: show this device's own copy, else the link-pinned creator's, else the
+  // first. The log (and so every replica's set of contenders) is identical everywhere;
+  // only this projection is per-device, exactly like creatorView.
+  for (const formId of Object.keys(alts)) {
+    const first = forms[formId];
+    const all = [first, ...Object.values(alts[formId])];
+    for (const f of all) f.contested = true;
+    const want = (identity && all.find((f) => f.creator === identity))
+      || (prefer[formId] && all.find((f) => f.creator === lc(prefer[formId])));
+    if (want && want !== first) {
+      forms[formId] = want;
+      const ch = closeHlcBy[formId + "|" + want.creator];
+      if (ch) closeHlc[formId] = ch; else delete closeHlc[formId];
+    }
+  }
 
   // ── Assemble state ──────────────────────────────────────────────────────────
   const feed = [...formHlc.entries()]

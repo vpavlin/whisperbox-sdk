@@ -23,12 +23,26 @@ export function mergeEvents(...logs) {
   return [...byId.values()].sort(totalOrder);
 }
 
-/** Merge one event into an already-merged log in place. Returns true if NEW. */
+/** Dedup key. Signed events are keyed by (id, signer): ids are deterministic and NOT
+ *  bound to the author, so keying by id alone let a forged copy (e.g. a non-creator's
+ *  "close:<form>") occupy the slot and shadow the genuine event forever. Unsigned events
+ *  (sealed responses) keep their id - it is content-addressed and unforgeable. */
+export const eventKey = (e) => (e.pub ? e.id + "#" + e.pub : e.id);
+
+/** Merge one event into an already-merged log in place. Returns true if NEW.
+ *  Same key arriving with an EARLIER HLC replaces the held copy (min-HLC rule, so the
+ *  result is independent of arrival order - same as mergeWhisperbox). */
 export function mergeOne(log, e) {
   if (!e.id) return false;
-  if (log.some((x) => x.id === e.id)) return false; // dedup by id
+  const k = eventKey(e);
+  const at = log.findIndex((x) => eventKey(x) === k);
+  if (at >= 0) {
+    if (compareHlc(e.hlc, log[at].hlc) >= 0) return false; // dedup
+    log.splice(at, 1);                                     // earlier copy wins
+  }
+  // Walk back past every event ordered AFTER e, then insert (keeps the log sorted).
   let i = log.length;
-  while (i > 0 && totalOrder(log[i - 1], e) < 0) i--;
+  while (i > 0 && totalOrder(log[i - 1], e) > 0) i--;
   log.splice(i, 0, e);
   return true;
 }
@@ -51,14 +65,15 @@ export function mergeWhisperbox(...logs) {
   for (const log of logs) {
     for (const e of log) {
       if (!e.id) continue;
-      const cur = byId.get(e.id);
+      const k = eventKey(e);
+      const cur = byId.get(k);
       if (!cur) {
-        byId.set(e.id, e);
+        byId.set(k, e);
       } else {
         // Same id: keep the earliest-HLC copy. If HLCs are identical the payloads
         // must be identical too (same device stamped the same event twice); keep cur.
         const c = compareHlc(e.hlc, cur.hlc);
-        if (c < 0) byId.set(e.id, e);
+        if (c < 0) byId.set(k, e);
       }
     }
   }

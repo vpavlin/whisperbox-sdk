@@ -1,0 +1,243 @@
+{
+  "creator": "0x32ec978fd7a4ac80213987a41ec2bf8965a94ba1",
+  "attacker": "0x7b187135f4f884cf654a2d903884b8b1bcbce46d",
+  "log": [
+    {
+      "v": 1,
+      "id": "form:fs",
+      "type": "form.publish",
+      "hlc": {
+        "wall": 50,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "id": "fs",
+        "title": "squat",
+        "description": "",
+        "creator": "0x7b187135f4f884cf654a2d903884b8b1bcbce46d",
+        "publicKey": "03c4a8bed945b0342ffacc3ceda6d25948a6c08933c2bb8315fe3b987abfdc318e",
+        "createdAt": 50,
+        "questions": [],
+        "whitelist": {
+          "type": "none",
+          "value": ""
+        },
+        "signature": null
+      },
+      "pub": "03c4a8bed945b0342ffacc3ceda6d25948a6c08933c2bb8315fe3b987abfdc318e",
+      "sig": "6a55b77a880adeacf0c6fa8e417736a4ca021a4aea1dd701b5a16c898d111ef362ca079886ff82f4ebcbee363f6b67b29262fa48fa30161596e0830506be1b0d"
+    },
+    {
+      "v": 1,
+      "id": "form:fs",
+      "type": "form.publish",
+      "hlc": {
+        "wall": 100,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "id": "fs",
+        "title": "genuine",
+        "description": "",
+        "creator": "0x32ec978fd7a4ac80213987a41ec2bf8965a94ba1",
+        "publicKey": "021fd6be0778e67f3c54cd0e43ac432da5e00ee30ffe7e2dd14d3635c7eff96e00",
+        "createdAt": 100,
+        "questions": [],
+        "whitelist": {
+          "type": "none",
+          "value": ""
+        },
+        "signature": null
+      },
+      "pub": "021fd6be0778e67f3c54cd0e43ac432da5e00ee30ffe7e2dd14d3635c7eff96e00",
+      "sig": "e12fa3bf06608e2c46a966d82338cf84ecdf8d9fd1f3c1d884b321686b99eb56194212ba1a4ef6a5a2becf04f3fd21e6d9516f8d5a2168ed06462f83dda031f0"
+    },
+    {
+      "v": 1,
+      "id": "close:fs",
+      "type": "form.close",
+      "hlc": {
+        "wall": 200,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "formId": "fs",
+        "expiresAt": null,
+        "author": "0x7b187135f4f884cf654a2d903884b8b1bcbce46d"
+      },
+      "pub": "03c4a8bed945b0342ffacc3ceda6d25948a6c08933c2bb8315fe3b987abfdc318e",
+      "sig": "d5d355f7d6297a9cd987f78ac130ccac42fcb23e09ba9172e10d9c50cc94851f30806cb685c3dc1267645595a6c4dcf864c8d18d58c01f5a3f7a1ae93f4ed97b"
+    },
+    {
+      "v": 1,
+      "id": "close:fs",
+      "type": "form.close",
+      "hlc": {
+        "wall": 300,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "formId": "fs",
+        "expiresAt": null,
+        "author": "0x32ec978fd7a4ac80213987a41ec2bf8965a94ba1"
+      },
+      "pub": "021fd6be0778e67f3c54cd0e43ac432da5e00ee30ffe7e2dd14d3635c7eff96e00",
+      "sig": "0995204e912d332b6f0f5429e7ec1ba2f2ac0f7eb1e14ae098d9b71ac9db00e60a5b0806b19963832ac518c57893310ee7541983fd37b719fee90a4c9346adca"
+    },
+    {
+      "v": 1,
+      "id": "confirm:fs:c1",
+      "type": "response.confirm",
+      "hlc": {
+        "wall": 310,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "formId": "fs",
+        "confirmationId": "c1",
+        "author": "0x32ec978fd7a4ac80213987a41ec2bf8965a94ba1"
+      },
+      "pub": "021fd6be0778e67f3c54cd0e43ac432da5e00ee30ffe7e2dd14d3635c7eff96e00",
+      "sig": "61c1ce173b20a823422b3c1561925442252ee3de3a6213f6b4136edc7e4629a3205a13cc348f0026c5ba44012f9bf2f35765a40d2ef43bf50fa75123953b968f"
+    }
+  ],
+  "asCreator": {
+    "v": 1,
+    "forms": {
+      "fs": {
+        "id": "fs",
+        "title": "genuine",
+        "description": "",
+        "creator": "0x32ec978fd7a4ac80213987a41ec2bf8965a94ba1",
+        "publicKey": "021fd6be0778e67f3c54cd0e43ac432da5e00ee30ffe7e2dd14d3635c7eff96e00",
+        "createdAt": 100,
+        "expiresAt": null,
+        "questions": [],
+        "whitelist": {
+          "type": "none",
+          "value": ""
+        },
+        "status": "closed",
+        "confirmations": [
+          "c1"
+        ],
+        "contested": true
+      }
+    },
+    "feed": [],
+    "responses": [],
+    "closeHlc": {
+      "fs": {
+        "wall": 300,
+        "ctr": 0,
+        "dev": "d"
+      }
+    },
+    "creator": {
+      "address": "0x32ec978fd7a4ac80213987a41ec2bf8965a94ba1",
+      "forms": [
+        "fs"
+      ]
+    },
+    "pending": {
+      "count": 0,
+      "events": []
+    },
+    "dropped": {
+      "count": 0,
+      "reasons": {}
+    }
+  },
+  "pinned": {
+    "v": 1,
+    "forms": {
+      "fs": {
+        "id": "fs",
+        "title": "genuine",
+        "description": "",
+        "creator": "0x32ec978fd7a4ac80213987a41ec2bf8965a94ba1",
+        "publicKey": "021fd6be0778e67f3c54cd0e43ac432da5e00ee30ffe7e2dd14d3635c7eff96e00",
+        "createdAt": 100,
+        "expiresAt": null,
+        "questions": [],
+        "whitelist": {
+          "type": "none",
+          "value": ""
+        },
+        "status": "closed",
+        "confirmations": [
+          "c1"
+        ],
+        "contested": true
+      }
+    },
+    "feed": [],
+    "responses": [],
+    "closeHlc": {
+      "fs": {
+        "wall": 300,
+        "ctr": 0,
+        "dev": "d"
+      }
+    },
+    "creator": null,
+    "pending": {
+      "count": 0,
+      "events": []
+    },
+    "dropped": {
+      "count": 0,
+      "reasons": {}
+    }
+  },
+  "browsing": {
+    "v": 1,
+    "forms": {
+      "fs": {
+        "id": "fs",
+        "title": "squat",
+        "description": "",
+        "creator": "0x7b187135f4f884cf654a2d903884b8b1bcbce46d",
+        "publicKey": "03c4a8bed945b0342ffacc3ceda6d25948a6c08933c2bb8315fe3b987abfdc318e",
+        "createdAt": 50,
+        "expiresAt": null,
+        "questions": [],
+        "whitelist": {
+          "type": "none",
+          "value": ""
+        },
+        "status": "closed",
+        "confirmations": [],
+        "contested": true
+      }
+    },
+    "feed": [],
+    "responses": [],
+    "closeHlc": {
+      "fs": {
+        "wall": 200,
+        "ctr": 0,
+        "dev": "d"
+      }
+    },
+    "creator": null,
+    "pending": {
+      "count": 0,
+      "events": []
+    },
+    "dropped": {
+      "count": 0,
+      "reasons": {}
+    }
+  }
+}

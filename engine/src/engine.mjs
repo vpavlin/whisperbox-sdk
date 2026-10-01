@@ -154,6 +154,11 @@ export function computeState(mergedLog, opts = {}) {
  *   confirmations: {formId → [confirmationId]}, dropped: {count, reasons},
  *   undecrypted: number }
  */
+/** Parsed address allow-list of a form whitelist {type:"addresses", value:"0xa,0xb"}. */
+export function whitelistAddresses(wl) {
+  return String(wl?.value ?? "").split(/[,\s]+/).map((a) => lc(a.trim())).filter(Boolean);
+}
+
 export function creatorView(state, opts) {
   const identity = lc(opts.identity);
   const open = typeof opts.open === "function" ? opts.open : () => null;
@@ -205,6 +210,11 @@ export function creatorView(state, opts) {
 
     const respondent = lc(dec.respondent ?? "");
     if (!respondent) { drop(view.dropped, "no-respondent"); continue; }
+    // Address allow-list: only listed respondents count (identity proven by the
+    // inner signature above). Comma-separated, case-insensitive, whitespace-tolerant.
+    if (f.whitelist?.type === "addresses" && !whitelistAddresses(f.whitelist).includes(respondent)) {
+      drop(view.dropped, "not-whitelisted"); continue;
+    }
     let seen = seenRespondent.get(formId);
     if (!seen) { seen = new Set(); seenRespondent.set(formId, seen); } // BUGFIX: store back
     if (seen.has(respondent)) { drop(view.dropped, "duplicate-respondent"); continue; }
@@ -215,6 +225,9 @@ export function creatorView(state, opts) {
       submittedAt: dec.submittedAt ?? null,
       answers: dec.answers ?? [],
       signature: dec.signature ?? null,
+      // Respondent-chosen random receipt id (sealed, so the public confirmation
+      // can't be linked to an address). null on pre-0.2 responses.
+      confirmationId: typeof dec.confirmationId === "string" ? dec.confirmationId : null,
       hlc: blob.hlc,
     });
   }

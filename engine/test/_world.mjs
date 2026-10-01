@@ -78,6 +78,8 @@ export function generateWorld(rng, seed) {
         { questionId: "q0b", value: resub ? 1 : 0 },
       ],
       signature: rng() < 0.7 ? "sig-resp-" + formId + "-" + r : null,
+      // 0.2+ responses carry a respondent-chosen receipt id; odd r = legacy shape.
+      ...(r % 2 === 0 ? { confirmationId: "cid-" + formId + "-" + r } : {}),
     });
     return toHex(sealToCreator(respondentId, creatorId.pubHex, body, { ephPriv, deterministic: true }));
   };
@@ -164,6 +166,14 @@ export function generateWorld(rng, seed) {
   }
 
   return { creators: creatorIds.map((c) => c.address), creatorObjs: creatorIds, respondentIds, events };
+}
+
+/** Creator the golden creator-view is computed for: the author of the FIRST
+ *  form in the merged log (so the projection is non-empty). Shared by
+ *  gen-fixtures.mjs and the golden check; C++ reads golden-meta.json. */
+export function goldenCreator(merged, creatorObjs) {
+  const first = merged.find((e) => e.type === "form.publish");
+  return creatorObjs.find((c) => c.address === first?.payload?.creator) ?? creatorObjs[0];
 }
 
 /** Partition a world into per-device logs with shuffled order + redelivery. */

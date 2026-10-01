@@ -23,7 +23,7 @@ import {
 import { identityFromPriv, sealToCreator, eciesOpen, toHex } from "../../contract/src/crypto.mjs";
 import { computeState, creatorView } from "../src/engine.mjs";
 import { checkInvariants } from "../src/oracle.mjs";
-import { mulberry32, generateWorld, partitionLogs, addr } from "./_world.mjs";
+import { mulberry32, generateWorld, partitionLogs, addr, goldenCreator } from "./_world.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ri = (rng, n) => Math.floor(rng() * n); // int in [0, n)
@@ -211,6 +211,23 @@ function unitChecks() {
     verifyResponse: (pseudo) => pseudo.payload.signature != null, // stand-in for ECDSA check
   });
   assert.deepStrictEqual(v9.dropped.reasons, { "sig-invalid": 1 }, "whitelist form rejects unsigned response");
+
+  // 10. Address whitelist: a SIGNED response from an unlisted respondent is
+  //     dropped; a listed one (mixed case + spaces in the list) is kept and its
+  //     sealed confirmationId surfaces in the creator view.
+  const pubW2 = mkForm("fw2", creator, { type: "addresses", value: ` ${respA.address.toUpperCase().replace("0X", "0x")} ,0xdead` });
+  const mkSigned = (who, wall, extra) => evResponseSubmit({
+    hlc: { wall, ctr: 0, dev: "d" }, dev: "d",
+    encryptedPayload: toHex(sealToCreator(who, creator.pubHex,
+      JSON.stringify({ formId: "fw2", respondent: who.address, submittedAt: null, answers: [], signature: "s", ...extra }),
+      { ephPriv: sha("unit-eph|w2|" + wall), deterministic: true })),
+  });
+  const s10 = computeState(mergeWhisperbox([pubW2, mkSigned(respA, 150, { confirmationId: "cid-a" }), mkSigned(respB, 151, {})]), { identity: creator.address });
+  const v10 = creatorView(s10, { identity: creator.address, open: openHook(creator), verifyResponse: () => true });
+  assert.strictEqual(v10.responses.fw2.length, 1, "only the listed respondent counts");
+  assert.strictEqual(v10.responses.fw2[0].respondent, respA.address);
+  assert.strictEqual(v10.responses.fw2[0].confirmationId, "cid-a", "sealed confirmationId surfaces");
+  assert.deepStrictEqual(v10.dropped.reasons, { "not-whitelisted": 1 });
 }
 
 // ── Golden vectors: seed 164 must reproduce the committed fixtures byte-for-byte ─
@@ -220,8 +237,10 @@ function goldenCheck() {
   const { creators, creatorObjs, events } = generateWorld(rng, seed);
   const logs = partitionLogs(rng, events, 3);
   const merged = mergeWhisperbox(...logs);
-  const state = computeState(merged, { identity: creators[0] });
-  const view = creatorView(state, { identity: creators[0], open: openHook(creatorObjs[0]) });
+  const gc = goldenCreator(merged, creatorObjs);
+  const state = computeState(merged, { identity: gc.address });
+  const view = creatorView(state, { identity: gc.address, open: openHook(gc) });
+  assert.ok(Object.values(view.responses).some((r) => r.length > 0), "golden creator view must exercise decrypted responses");
 
   const fmt = (x) => JSON.stringify(x, null, 2) + "\n";
   const wantMerged = readFileSync(join(here, "fixtures", "golden-merged.json"), "utf8");

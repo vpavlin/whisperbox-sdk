@@ -31,6 +31,8 @@
         "type": "none",
         "value": ""
       },
+      "maxResponses": null,
+      "showResponseCount": false,
       "status": "open",
       "confirmations": []
     },
@@ -64,6 +66,8 @@
         "type": "addresses",
         "value": "0x63badddcc9c6adf34e9f05145d4604623166b565,0x02c9ddc423c63142b866878a7ea7c40a76d7610d"
       },
+      "maxResponses": null,
+      "showResponseCount": false,
       "status": "open",
       "confirmations": []
     },
@@ -97,6 +101,8 @@
         "type": "none",
         "value": ""
       },
+      "maxResponses": null,
+      "showResponseCount": false,
       "status": "open",
       "confirmations": [
         "conf-164-3-0"
@@ -132,6 +138,8 @@
         "type": "addresses",
         "value": "0x63badddcc9c6adf34e9f05145d4604623166b565,0x02c9ddc423c63142b866878a7ea7c40a76d7610d"
       },
+      "maxResponses": null,
+      "showResponseCount": false,
       "status": "open",
       "confirmations": [
         "conf-164-2-0"
@@ -309,6 +317,7 @@
     }
   ],
   "closeHlc": {},
+  "closedSpans": {},
   "creator": {
     "address": "0x0d97e55b942f72d9c4b2ba47b60ea4aff3e8fdb3",
     "forms": [

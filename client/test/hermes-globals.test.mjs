@@ -33,6 +33,21 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   assert.ok(!a.snapshot().state.forms[fid].hidden, "hiding is local");
   assert.strictEqual(b.snapshot().state.forms[fid].myAnswers.answers[0].value, "žluťoučký");
   assert.ok(b.unhideForm(fid).ok && !b.snapshot().state.forms[fid].hidden);
+  // 0.3.2: drafts, scheduled publish, answer drafts, cap auto-close, automatic receipts
+  const d = a.saveDraft({ def: { title: "Later", questions: [{ id: "q1", type: "boolean", text: "?", required: true }] }, publishAt: a.now() - 1 });
+  assert.ok(d.ok && a.snapshot().drafts.length === 1);
+  a.lastHousekeep = 0; a.tick(); pump();
+  assert.strictEqual(a.snapshot().drafts.length, 0, "due scheduled draft published by tick");
+  const later = Object.values(b.snapshot().state.forms).find((f) => f.title === "Later");
+  assert.ok(later, "scheduled form reached the other device");
+  b.saveAnswerDraft(later.id, [{ questionId: "q1", value: true }]);
+  assert.strictEqual(b.snapshot().state.forms[later.id].answerDraft[0].value, true);
+  const capped = a.createForm({ title: "Cap 1", maxResponses: 1, questions: [{ id: "q1", type: "boolean", text: "?", required: true }] }).formId;
+  a.setAutoReceipts(capped, true); pump();
+  assert.ok(b.submitResponse(capped, [{ questionId: "q1", value: false }]).ok); pump();
+  a.lastHousekeep = 0; a.tick(); pump();
+  assert.strictEqual(b.snapshot().state.forms[capped].status, "closed", "auto-closed at the cap");
+  assert.ok(b.snapshot().state.forms[capped].myConfirmed, "automatic receipt");
   for (const c of [a, b]) c.tick();
   assert.strictEqual((a.lastError || "") + (b.lastError || ""), "", "no swallowed errors");
 });

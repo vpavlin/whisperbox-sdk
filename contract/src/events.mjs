@@ -35,6 +35,7 @@ export const EventType = Object.freeze({
   RESPONSE_SUBMIT: "response.submit",
   RESPONSE_CONFIRM: "response.confirm",
   FORM_CLOSE: "form.close",
+  FORM_REOPEN: "form.reopen",   // 0.3.2+: creator re-opens a closed form
 });
 
 // Events only the form's creator may author (gated). Gating: payload.author ==
@@ -42,6 +43,7 @@ export const EventType = Object.freeze({
 export const CREATOR_GATED = new Set([
   EventType.RESPONSE_CONFIRM,
   EventType.FORM_CLOSE,
+  EventType.FORM_REOPEN,
 ]);
 
 // Open events: any participant may author; no event-level signature allowed.
@@ -59,7 +61,13 @@ export const responseSubmitId = (encryptedPayload) =>
   `resp:${bytesToHex(sha256(utf8ToBytes(String(encryptedPayload))))}`;
 export const responseConfirmId = (formId, confirmationId) =>
   `confirm:${lc(formId)}:${confirmationId}`;
-export const formCloseId = (formId) => `close:${lc(formId)}`;
+// Close/re-open can now happen repeatedly, so each one needs its own id (a repeated
+// close:<formId> would be deduplicated away). The bare form is kept for old events.
+export const formCloseId = (formId, nonce) => (nonce ? `close:${lc(formId)}:${nonce}` : `close:${lc(formId)}`);
+export const formReopenId = (formId, nonce) => `reopen:${lc(formId)}:${nonce}`;
+/** One receipt event for many responses ("confirm all"): content-addressed by the ids. */
+export const responseConfirmBatchId = (formId, confirmationIds) =>
+  `confirm:${lc(formId)}:b:${bytesToHex(sha256(utf8ToBytes([...confirmationIds].sort().join(",")))).slice(0, 16)}`;
 
 // ── Envelope constructors ────────────────────────────────────────────────────────
 // Each returns a full Event. hlc + dev come from the local Clock (hlc.mjs).
@@ -110,13 +118,37 @@ export function evResponseConfirm({ hlc, dev, formId, confirmationId, author }) 
 
 /** Sticky: once folded, the form is closed (creator view drops later-decrypted
  *  responses; feed removes it). */
-export function evFormClose({ hlc, dev, formId, expiresAt, author }) {
+export function evFormClose({ hlc, dev, formId, expiresAt, author, nonce }) {
   return {
     v: 1,
-    id: formCloseId(formId),
+    id: formCloseId(formId, nonce),
     type: EventType.FORM_CLOSE,
     hlc,
     dev,
     payload: { formId: lc(formId), expiresAt: expiresAt ?? null, author: lc(author) },
+  };
+}
+
+/** Re-open a closed form (creator-gated). Answers sealed while it was closed stay dropped. */
+export function evFormReopen({ hlc, dev, formId, author, nonce }) {
+  return {
+    v: 1,
+    id: formReopenId(formId, nonce),
+    type: EventType.FORM_REOPEN,
+    hlc,
+    dev,
+    payload: { formId: lc(formId), author: lc(author) },
+  };
+}
+
+/** Receipts for many responses in one event (payload.confirmationIds). */
+export function evResponseConfirmBatch({ hlc, dev, formId, confirmationIds, author }) {
+  return {
+    v: 1,
+    id: responseConfirmBatchId(formId, confirmationIds),
+    type: EventType.RESPONSE_CONFIRM,
+    hlc,
+    dev,
+    payload: { formId: lc(formId), confirmationIds: [...confirmationIds], author: lc(author) },
   };
 }

@@ -91,7 +91,32 @@ for (const layers of [1, 0]) {
       assert.ok(fresh.diag.rbsrRx > 0, "via RBSR");
       assert.strictEqual(fresh.diag.legacyReseeds + (want.legacyReseeds || 0), 0, "no whole-log reseeds");
 
-      // 6. share links are identical on both sides
+      // 6. 0.3.2 lifecycle across implementations: desktop closes + re-opens, phone answers
+      //    a yes/no question after the re-open, desktop confirms ALL in one batch event;
+      //    phone caps its own form and confirms all the desktop's way.
+      const fL = (await b.call("createForm", [JSON.stringify({ title: "Lifecycle", maxResponses: 5, showResponseCount: true,
+        questions: [{ id: "q1", type: "boolean", text: "Coming?", required: true }] })])).formId;
+      assert.ok(await until(b, () => !!phone.snapshot().state.forms[fL]));
+      assert.strictEqual(phone.snapshot().state.forms[fL].maxResponses, 5, "cap travels C++ -> JS");
+      assert.ok((await b.call("closeForm", [fL])).ok);
+      assert.ok(await until(b, () => phone.snapshot().state.forms[fL].status === "closed"), "phone sees close");
+      assert.ok((await b.call("reopenForm", [fL])).ok);
+      assert.ok(await until(b, () => phone.snapshot().state.forms[fL].status === "open"), "phone sees re-open (C++ form.reopen admitted + folded by JS)");
+      assert.ok(phone.submitResponse(fL, [{ questionId: "q1", value: false }]).ok);
+      assert.ok(await until(b, async () => ((await b.call("getDecryptedResponses", [fL])).responses || []).length === 1), "post-re-open answer counts in C++");
+      assert.strictEqual((await b.call("getDecryptedResponses", [fL])).responses[0].answers[0].value, false, "boolean false round-trips");
+      assert.strictEqual((await b.call("confirmAll", [fL])).events, 1);
+      assert.ok(await until(b, () => phone.snapshot().state.forms[fL].myConfirmed), "phone sees its receipt from a C++ batch event");
+      const fQ = phone.createForm({ title: "Phone lifecycle", questions: [{ id: "q1", type: "boolean", text: "Ok?", required: true }] }).formId;
+      assert.ok(await until(b, async () => !!(await b.call("snapshot")).state.forms[fQ]));
+      assert.ok(phone.closeForm(fQ).ok && phone.reopenForm(fQ).ok);
+      assert.ok(await until(b, async () => (await b.call("snapshot")).state.forms[fQ].status === "open"), "desktop folds the phone's close + re-open");
+      assert.ok((await b.call("submitResponse", [fQ, JSON.stringify([{ questionId: "q1", value: true }])])).ok);
+      assert.ok(await until(b, () => (phone.snapshot().creatorView?.responses[fQ] || []).length === 1));
+      assert.strictEqual(phone.confirmAll(fQ).events, 1);
+      assert.ok(await until(b, async () => (await b.call("snapshot")).state.forms[fQ].myConfirmed), "desktop sees its receipt from a JS batch event");
+
+      // 7. share links are identical on both sides
       assert.strictEqual(phone.shareUri(fA).uri, (await b.call("shareUri", [fA])).uri);
     } finally { b.close(); }
   });

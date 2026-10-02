@@ -11,7 +11,7 @@
 //   catch-up (fp/ids/need) over event keys.
 import { mergeOne, mergeWhisperbox, eventKey } from "../../contract/src/merge.mjs";
 import { Clock } from "../../contract/src/hlc.mjs";
-import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId } from "../../contract/src/events.mjs";
+import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId, formReopenId, responseConfirmBatchId } from "../../contract/src/events.mjs";
 import * as C from "../../contract/src/crypto-portable.mjs";
 import { computeState, creatorView } from "../../engine/src/engine.mjs";
 import { buildInitial, respond } from "../../../third_party/loam-sync/dist/catchup.js";
@@ -65,6 +65,7 @@ export class WhisperboxClient {
     this.log = []; this.watched = new Set(); this.pins = {}; this.mySubs = {}; // formId → my receipt id ("" = legacy)
     this.identity = null; this.deviceId = ""; this.clock = null; this.cardKeys = new Map();
     this.hidden = new Set(); this.myAnswers = {};
+    this.drafts = {}; this.answerDrafts = {}; this.autoReceipts = new Set(); this.lastHousekeep = 0;
     this.nodeReady = false; this.listeners = new Set();
     this.diag = { rxRaw: 0, rxNew: 0, rxDup: 0, txTotal: 0, txErr: 0, admDropSig: 0, admDropType: 0, rbsrRx: 0, legacyReseeds: 0 };
     this.syncTries = 0; this.lastSyncAt = 0; this.lastReserveAt = 0; this.unsent = new Set();
@@ -89,6 +90,8 @@ export class WhisperboxClient {
     this.mySubs = parse(await this.store.get("wb-mysubs"), {});
     this.hidden = new Set(parse(await this.store.get("wb-hidden"), []));
     this.myAnswers = parse(await this.store.get("wb-myanswers"), {});   // formId -> {answers, submittedAt}
+    const dr = parse(await this.store.get("wb-drafts"), {});
+    this.drafts = dr.forms || {}; this.answerDrafts = dr.answers || {}; this.autoReceipts = new Set(dr.autoReceipts || []);
     // Form keys that came from a Keycard (not derivable from the identity): one secret per
     // form ("wb-fk-<formId>"), with the list of ids (not secret) in the plain store.
     this.cardKeys = new Map();
@@ -118,6 +121,21 @@ export class WhisperboxClient {
       this.catchupRound();
     }
     if (this.unsent.size) for (const id of [...this.unsent]) { const e = this.log.find((x) => eventKey(x) === id); this.unsent.delete(id); if (e) this.broadcast(e); }
+    if (this.now() - this.lastHousekeep >= 5000) { this.lastHousekeep = this.now(); this.housekeeping(); }
+  }
+  /** Publish due scheduled drafts; close my forms at their answer cap / end date; send
+   *  receipts for forms with automatic receipts. Same rules as the desktop core. */
+  housekeeping() {
+    for (const d of Object.values(this.drafts)) if (d.publishAt != null && d.publishAt <= this.now()) this.publishDraft(d.id);
+    const st = this.state();
+    const mine = Object.values(st.forms).filter((f) => f.creator === this.identity.address);
+    if (!mine.length) return;
+    const cv = this.decrypt(st);
+    for (const f of mine) {
+      const got = (cv.responses[f.id] || []);
+      if (f.status === "open" && ((f.maxResponses && got.length >= f.maxResponses) || (f.expiresAt != null && this.now() > f.expiresAt))) this.closeForm(f.id);
+      if (this.autoReceipts.has(f.id) && got.some((r) => !(f.confirmations || []).includes(confirmIdOf(r, f.id)))) this.confirmAll(f.id);
+    }
   }
   subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); }
   emit() { for (const fn of this.listeners) { try { fn(); } catch { /* listener */ } } }
@@ -188,7 +206,7 @@ export class WhisperboxClient {
   }
   // Admission gates (mirror WhisperboxCoreImpl::admitEvent).
   admit(e) {
-    if (e.type === EventType.FORM_PUBLISH || e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.FORM_CLOSE) {
+    if (e.type === EventType.FORM_PUBLISH || e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.FORM_CLOSE || e.type === EventType.FORM_REOPEN) {
       if (!C.verifyEvent(e)) { this.diag.admDropSig++; return false; }
       return true;
     }
@@ -209,6 +227,33 @@ export class WhisperboxClient {
     this.store.set("wb-mysubs", JSON.stringify(this.mySubs));
     this.store.set("wb-hidden", JSON.stringify([...this.hidden]));
     this.store.set("wb-myanswers", JSON.stringify(this.myAnswers));
+  }
+  saveDrafts() {
+    return this.store.set("wb-drafts", JSON.stringify({ forms: this.drafts, answers: this.answerDrafts, autoReceipts: [...this.autoReceipts] }));
+  }
+  // ── drafts (local) + scheduled publishing ──────────────────────────────────────
+  /** d = {id?, def, publishAt?(ms)} -> {ok, draftId}. Never leaves this device. */
+  saveDraft(d) {
+    if (!d || typeof d.def !== "object") return { ok: false, error: "draft needs a def object" };
+    const id = d.id || "draft-" + C.randomHex(4);
+    this.drafts[id] = { id, def: d.def, updatedAt: this.now(), publishAt: Number.isFinite(d.publishAt) ? d.publishAt : null };
+    this.saveDrafts(); this.emit();
+    return { ok: true, draftId: id };
+  }
+  deleteDraft(id) { delete this.drafts[id]; this.saveDrafts(); this.emit(); return { ok: true }; }
+  publishDraft(id) {
+    const d = this.drafts[id];
+    if (!d) return { ok: false, error: "unknown draft" };
+    const r = this.createForm(d.def);
+    if (r.ok) { delete this.drafts[id]; this.saveDrafts(); this.emit(); }
+    return r;
+  }
+  /** Half-filled answers for a form (restored when it is opened again); [] clears. */
+  saveAnswerDraft(formId, answers) {
+    formId = lc(formId);
+    if (!Array.isArray(answers) || !answers.length) delete this.answerDrafts[formId]; else this.answerDrafts[formId] = answers;
+    this.saveDrafts();
+    return { ok: true };
   }
   /** Hide from my lists (local only; nothing is deleted, unhideForm brings it back). */
   hideForm(formId) { formId = lc(formId); if (!formId) return { ok: false, error: "formId required" }; this.hidden.add(formId); this.saveMeta(); this.emit(); return { ok: true, formId }; }
@@ -259,6 +304,8 @@ export class WhisperboxClient {
       creator: this.identity.address, publicKey, createdAt: this.now(),
       expiresAt: def.expiresAt ?? null, questions: Array.isArray(def.questions) ? def.questions : [],
       whitelist: def.whitelist || { type: "none", value: "" },
+      ...(Number.isInteger(def.maxResponses) && def.maxResponses > 0 ? { maxResponses: def.maxResponses } : {}),
+      ...(def.showResponseCount === true ? { showResponseCount: true } : {}),
     };
     const e = this.buildEvent(EventType.FORM_PUBLISH, formPublishId(formId), p, true);
     this.adopt(e);
@@ -269,8 +316,42 @@ export class WhisperboxClient {
     const f = this.state().forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
     if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
-    this.adopt(this.buildEvent(EventType.FORM_CLOSE, formCloseId(formId), { formId, expiresAt: null, author: this.identity.address }, true));
+    this.adopt(this.buildEvent(EventType.FORM_CLOSE, formCloseId(formId, C.randomHex(6)), { formId, expiresAt: null, author: this.identity.address }, true));
     return { ok: true };
+  }
+  /** Re-open a closed form; answers sealed while it was closed stay dropped. */
+  reopenForm(formId) {
+    formId = lc(formId);
+    const f = this.state().forms[formId];
+    if (!f) return { ok: false, error: "unknown form" };
+    if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
+    if (f.status === "open") return { ok: false, error: "form is already open" };
+    if (f.expiresAt != null && this.now() > f.expiresAt) return { ok: false, error: "its end date has passed - duplicate it as a new form" };
+    this.adopt(this.buildEvent(EventType.FORM_REOPEN, formReopenId(formId, C.randomHex(6)), { formId, author: this.identity.address }, true));
+    return { ok: true };
+  }
+  /** Receipts for every unconfirmed response, 100 per event. */
+  confirmAll(formId) {
+    formId = lc(formId);
+    const st = this.state();
+    const f = st.forms[formId];
+    if (!f) return { ok: false, error: "unknown form" };
+    if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
+    const todo = (this.decrypt(st).responses[formId] || []).map((r) => confirmIdOf(r, formId)).filter((c) => c && !(f.confirmations || []).includes(c));
+    let events = 0;
+    for (let i = 0; i < todo.length; i += 100) {
+      const ids = todo.slice(i, i + 100);
+      this.adopt(this.buildEvent(EventType.RESPONSE_CONFIRM, responseConfirmBatchId(formId, ids), { formId, confirmationIds: ids, author: this.identity.address }, true));
+      events++;
+    }
+    return { ok: true, confirmed: todo.length, events };
+  }
+  setAutoReceipts(formId, on) {
+    formId = lc(formId);
+    if (on) this.autoReceipts.add(formId); else this.autoReceipts.delete(formId);
+    this.saveDrafts(); this.emit();
+    if (on) this.confirmAll(formId);
+    return { ok: true, autoReceipts: !!on };
   }
   confirmResponse(formId, respondent) {
     formId = lc(formId); respondent = lc(respondent);
@@ -290,6 +371,7 @@ export class WhisperboxClient {
     const f = this.state().forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
     if (f.status !== "open") return { ok: false, error: "form is closed" };
+    if (f.expiresAt != null && this.now() > f.expiresAt) return { ok: false, error: "this form closed at its end date" };
     if (formId in this.mySubs) return { ok: false, error: "you already answered this form" };
     if (!f.publicKey) return { ok: false, error: "form not synced yet - try again in a moment" };
     const pin = this.pins[formId] || "";
@@ -311,6 +393,7 @@ export class WhisperboxClient {
     this.mySubs[formId] = confirmationId;
     this.myAnswers[formId] = { answers, submittedAt };   // private copy: the sealed blob only opens for the creator
     this.saveMeta();
+    if (this.answerDrafts[formId]) { delete this.answerDrafts[formId]; this.saveDrafts(); }
     this.adopt(e);
     return { ok: true, eventId: e.id };
   }
@@ -408,12 +491,13 @@ export class WhisperboxClient {
         // mine, but no key here to open its answers (Keycard form on a new install): tap to restore
         keyMissing: missing.has(fid), keycard: this.cardKeys.has(fid),
         hidden: this.hidden.has(fid), ...(this.myAnswers[fid] ? { myAnswers: this.myAnswers[fid] } : {}),
+        autoReceipts: this.autoReceipts.has(fid), ...(this.answerDrafts[fid] ? { answerDraft: this.answerDrafts[fid] } : {}),
       });
     }
     return {
       v: 1, identity: { address: this.identity.address, pubHex: this.identity.pubHex }, deviceId: this.deviceId,
       nodeReady: this.nodeReady, state: st, creatorView: cv, watched: [...this.watched],
-      pendingForms: [...this.watched].filter((id) => !st.forms[id]), mySubmissions: Object.keys(this.mySubs), hidden: [...this.hidden],
+      pendingForms: [...this.watched].filter((id) => !st.forms[id]), mySubmissions: Object.keys(this.mySubs), hidden: [...this.hidden], drafts: Object.values(this.drafts),
       diagnostics: { ...this.diag, logSize: this.log.length },
     };
   }
@@ -423,7 +507,7 @@ export class WhisperboxClient {
     if (!f) return { ok: false, error: "unknown form" };
     if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
     const cell = (v) => (/[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v);
-    const opt = (q, x) => (typeof x === "number" && q.options && q.options[x] !== undefined ? String(q.options[x]) : x == null ? "" : typeof x === "string" ? x : JSON.stringify(x));
+    const opt = (q, x) => (typeof x === "number" && q.options && q.options[x] !== undefined ? String(q.options[x]) : x == null ? "" : typeof x === "boolean" ? (x ? "Yes" : "No") : typeof x === "string" ? x : JSON.stringify(x));
     const val = (q, v) => (Array.isArray(v) ? v.map((x) => opt(q, x)).join("; ") : opt(q, v));
     const iso = (ms) => (ms > 0 ? new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z") : "");
     const qs = f.questions || [];

@@ -127,6 +127,8 @@
           "type": "none",
           "value": ""
         },
+        "maxResponses": null,
+        "showResponseCount": false,
         "status": "closed",
         "confirmations": [
           "c1"
@@ -142,6 +144,18 @@
         "ctr": 0,
         "dev": "d"
       }
+    },
+    "closedSpans": {
+      "fs": [
+        {
+          "from": {
+            "wall": 300,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "to": null
+        }
+      ]
     },
     "creator": {
       "address": "0x32ec978fd7a4ac80213987a41ec2bf8965a94ba1",
@@ -174,6 +188,8 @@
           "type": "none",
           "value": ""
         },
+        "maxResponses": null,
+        "showResponseCount": false,
         "status": "closed",
         "confirmations": [
           "c1"
@@ -189,6 +205,18 @@
         "ctr": 0,
         "dev": "d"
       }
+    },
+    "closedSpans": {
+      "fs": [
+        {
+          "from": {
+            "wall": 300,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "to": null
+        }
+      ]
     },
     "creator": null,
     "pending": {
@@ -216,6 +244,8 @@
           "type": "none",
           "value": ""
         },
+        "maxResponses": null,
+        "showResponseCount": false,
         "status": "closed",
         "confirmations": [],
         "contested": true
@@ -229,6 +259,18 @@
         "ctr": 0,
         "dev": "d"
       }
+    },
+    "closedSpans": {
+      "fs": [
+        {
+          "from": {
+            "wall": 200,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "to": null
+        }
+      ]
     },
     "creator": null,
     "pending": {

@@ -51,6 +51,7 @@ export function computeState(mergedLog, opts = {}) {
   const prefer = opts.prefer || {};
   const alts = {}; // formId → { creator → FormView } for contending publishes (id squatting)
   const closeHlcBy = {}; // "formId|creator" → close hlc (per contender)
+  const spansBy = {}; // "formId|creator" -> [{from, to|null}] closed periods (close..reopen)
 
   const forms = {}; // formId → FormView (inserted in HLC publish order)
   const formHlc = new Map(); // formId → publish event hlc (feed ordering)
@@ -74,6 +75,8 @@ export function computeState(mergedLog, opts = {}) {
           expiresAt: p.expiresAt ?? null,
           questions: p.questions ?? [],
           whitelist: p.whitelist ?? { type: "none", value: "" },
+          maxResponses: Number.isInteger(p.maxResponses) && p.maxResponses > 0 ? p.maxResponses : null,
+          showResponseCount: p.showResponseCount === true,
           status: "open",
           confirmations: [],
         });
@@ -107,7 +110,8 @@ export function computeState(mergedLog, opts = {}) {
         return;
       }
       case EventType.RESPONSE_CONFIRM:
-      case EventType.FORM_CLOSE: {
+      case EventType.FORM_CLOSE:
+      case EventType.FORM_REOPEN: {
         if (verify && e.sig && !verify(e)) { drop(dropped, "sig-invalid"); return; }
         const formId = lc(p.formId);
         let f = forms[formId];
@@ -118,12 +122,27 @@ export function computeState(mergedLog, opts = {}) {
           f = alt; // a contender's own close/confirm applies to its own copy
         }
         if (e.type === EventType.RESPONSE_CONFIRM) {
-          if (!f.confirmations.includes(p.confirmationId)) f.confirmations.push(p.confirmationId);
-        } else { // FORM_CLOSE — sticky, idempotent
+          // single receipt, or many in one event ("confirm all")
+          const ids = Array.isArray(p.confirmationIds) ? p.confirmationIds : [p.confirmationId];
+          for (const cid of ids) if (typeof cid === "string" && cid && !f.confirmations.includes(cid)) f.confirmations.push(cid);
+          return;
+        }
+        // Close / re-open: the log is HLC-ordered, so the last one wins. Each closed
+        // period is kept: answers sealed during ANY of them stay dropped after a re-open.
+        const key = formId + "|" + f.creator;
+        const spans = spansBy[key] || (spansBy[key] = []);
+        const isOpen = !spans.length || spans[spans.length - 1].to !== null;
+        if (e.type === EventType.FORM_CLOSE) {
+          if (isOpen) spans.push({ from: e.hlc, to: null });
           f.status = "closed";
-          if (f === forms[formId]) closeHlc[formId] = e.hlc;
-          closeHlcBy[formId + "|" + f.creator] = e.hlc;
+          if (f === forms[formId]) closeHlc[formId] = spans[spans.length - 1].from;
+          closeHlcBy[key] = spans[spans.length - 1].from;
           if (p.expiresAt != null) f.expiresAt = p.expiresAt;
+        } else { // FORM_REOPEN
+          if (!isOpen) spans[spans.length - 1].to = e.hlc;
+          f.status = "open";
+          if (f === forms[formId]) delete closeHlc[formId];
+          delete closeHlcBy[key];
         }
         return;
       }
@@ -149,6 +168,11 @@ export function computeState(mergedLog, opts = {}) {
       if (ch) closeHlc[formId] = ch; else delete closeHlc[formId];
     }
   }
+  const closedSpans = {}; // formId -> closed periods of the creator shown on this device
+  for (const [formId, f] of Object.entries(forms)) {
+    const sp = spansBy[formId + "|" + f.creator];
+    if (sp && sp.length) closedSpans[formId] = sp.map((x) => ({ from: x.from, to: x.to }));
+  }
 
   // ── Assemble state ──────────────────────────────────────────────────────────
   const feed = [...formHlc.entries()]
@@ -161,7 +185,8 @@ export function computeState(mergedLog, opts = {}) {
     forms,
     feed,
     responses, // opaque pool, HLC order (fold-level; creatorView interprets)
-    closeHlc, // formId → close event hlc (creator-view closed-form drops)
+    closeHlc, // formId → close event hlc of the CURRENT closed period
+    closedSpans, // formId → [{from, to|null}] every closed period (creator-view drops)
     creator: null,
     pending: { count: deferred.length, events: deferred.map((e) => ({ id: e.id, type: e.type })) },
     dropped,
@@ -233,10 +258,16 @@ export function creatorView(state, opts) {
     // Closed-form drop: blob's HLC after the close event's HLC. Cross-device HLC
     // comparison is approximate (clock skew) — document as best-effort; the
     // original whisperbox had no close at all, so this is our stricter layer.
-    if (f.status === "closed") {
+    // Sealed while the form was closed (any closed period, even if re-opened since).
+    const spans = state.closedSpans?.[formId];
+    if (spans && spans.length) {
+      if (spans.some((s) => compareHlc(blob.hlc, s.from) >= 0 && (s.to === null || compareHlc(blob.hlc, s.to) < 0))) { drop(view.dropped, "form-closed"); continue; }
+    } else if (f.status === "closed") {
       const ch = state.closeHlc?.[formId];
       if (!ch || compareHlc(blob.hlc, ch) >= 0) { drop(view.dropped, "form-closed"); continue; }
     }
+    // Close-at date (expiresAt, ms): answers stamped after it don't count.
+    if (f.expiresAt != null && Number(blob.hlc?.wall) > Number(f.expiresAt)) { drop(view.dropped, "expired"); continue; }
 
     // Whitelist + inner signature (original: enforced only when whitelist != none).
     if (f.whitelist?.type !== "none" && verifyResponse) {
@@ -258,6 +289,8 @@ export function creatorView(state, opts) {
     if (!seen) { seen = new Set(); seenRespondent.set(formId, seen); } // BUGFIX: store back
     if (seen.has(respondent)) { drop(view.dropped, "duplicate-respondent"); continue; }
     seen.add(respondent);
+    // Answer cap: the first maxResponses (HLC order - identical on every replica) count.
+    if (f.maxResponses && view.responses[formId].length >= f.maxResponses) { drop(view.dropped, "over-limit"); continue; }
 
     view.responses[formId].push({
       respondent,

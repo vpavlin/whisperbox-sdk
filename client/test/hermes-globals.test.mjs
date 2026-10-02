@@ -48,6 +48,14 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   a.lastHousekeep = 0; a.tick(); pump();
   assert.strictEqual(b.snapshot().state.forms[capped].status, "closed", "auto-closed at the cap");
   assert.ok(b.snapshot().state.forms[capped].myConfirmed, "automatic receipt");
+  // "new answers": flagged until the creator marks them seen
+  const nf = a.createForm({ title: "New?", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId; pump();
+  assert.strictEqual(a.snapshot().state.forms[nf].newResponses, 0);
+  assert.ok(b.submitResponse(nf, [{ questionId: "q1", value: "hi" }]).ok); pump();
+  assert.strictEqual(a.snapshot().state.forms[nf].newResponses, 1);
+  assert.ok(a.snapshot().newResponses >= 1);
+  a.markSeen(nf);
+  assert.strictEqual(a.snapshot().state.forms[nf].newResponses, 0);
   for (const c of [a, b]) c.tick();
   assert.strictEqual((a.lastError || "") + (b.lastError || ""), "", "no swallowed errors");
 });

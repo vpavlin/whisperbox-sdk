@@ -67,6 +67,7 @@ export class WhisperboxClient {
     this.identity = null; this.deviceId = ""; this.clock = null; this.cardKeys = new Map();
     this.hidden = new Set(); this.myAnswers = {};
     this.drafts = {}; this.answerDrafts = {}; this.autoReceipts = new Set(); this.lastHousekeep = 0;
+    this.seen = {};   // formId -> responses seen ("N new"); first sight = all seen
     this.nodeReady = false; this.listeners = new Set();
     this.diag = { rxRaw: 0, rxNew: 0, rxDup: 0, txTotal: 0, txErr: 0, admDropSig: 0, admDropType: 0, rbsrRx: 0, legacyReseeds: 0 };
     this.syncTries = 0; this.lastSyncAt = 0; this.lastReserveAt = 0; this.unsent = new Set();
@@ -93,6 +94,7 @@ export class WhisperboxClient {
     this.myAnswers = parse(await this.store.get("wb-myanswers"), {});   // formId -> {answers, submittedAt}
     const dr = parse(await this.store.get("wb-drafts"), {});
     this.drafts = dr.forms || {}; this.answerDrafts = dr.answers || {}; this.autoReceipts = new Set(dr.autoReceipts || []);
+    this.seen = parse(await this.store.get("wb-seen"), {});
     // Form keys that came from a Keycard (not derivable from the identity): one secret per
     // form ("wb-fk-<formId>"), with the list of ids (not secret) in the plain store.
     this.cardKeys = new Map();
@@ -228,6 +230,13 @@ export class WhisperboxClient {
     this.store.set("wb-mysubs", JSON.stringify(this.mySubs));
     this.store.set("wb-hidden", JSON.stringify([...this.hidden]));
     this.store.set("wb-myanswers", JSON.stringify(this.myAnswers));
+  }
+  /** Mark every response of a form as seen (the creator opened it). */
+  markSeen(formId) {
+    formId = lc(formId);
+    const n = (this.decrypt(this.state()).responses[formId] || []).length;
+    if (this.seen[formId] !== n) { this.seen[formId] = n; this.store.set("wb-seen", JSON.stringify(this.seen)); this.emit(); }
+    return { ok: true, seen: n };
   }
   saveDrafts() {
     return this.store.set("wb-drafts", JSON.stringify({ forms: this.drafts, answers: this.answerDrafts, autoReceipts: [...this.autoReceipts] }));
@@ -479,6 +488,7 @@ export class WhisperboxClient {
       }
     }
     const missing = new Set(this.formsMissingKeys(st));
+    let seenDirty = false, newTotal = 0;
     for (const [fid, f] of Object.entries(st.forms)) {
       const mine = f.creator === this.identity.address;
       const submitted = fid in this.mySubs;
@@ -496,11 +506,18 @@ export class WhisperboxClient {
         // mine, but no key here to open its answers (Keycard form on a new install): tap to restore
         keyMissing: missing.has(fid), keycard: this.cardKeys.has(fid),
         hidden: this.hidden.has(fid), ...(this.myAnswers[fid] ? { myAnswers: this.myAnswers[fid] } : {}),
+        ...(mine ? (() => {   // "N new" since the creator last looked
+          const n = (cv?.responses?.[fid] || []).length;
+          if (this.seen[fid] === undefined) { this.seen[fid] = n; seenDirty = true; }
+          const nw = Math.max(0, n - this.seen[fid]); if (!this.hidden.has(fid)) newTotal += nw;
+          return { newResponses: nw };
+        })() : {}),
         autoReceipts: this.autoReceipts.has(fid), ...(this.answerDrafts[fid] ? { answerDraft: this.answerDrafts[fid] } : {}),
       });
     }
+    if (seenDirty) this.store.set("wb-seen", JSON.stringify(this.seen));
     return {
-      v: 1, identity: { address: this.identity.address, pubHex: this.identity.pubHex }, deviceId: this.deviceId,
+      v: 1, identity: { address: this.identity.address, pubHex: this.identity.pubHex }, deviceId: this.deviceId, newResponses: newTotal,
       nodeReady: this.nodeReady, state: st, creatorView: cv, watched: [...this.watched],
       pendingForms: [...this.watched].filter((id) => !st.forms[id]), mySubmissions: Object.keys(this.mySubs), hidden: [...this.hidden], drafts: Object.values(this.drafts),
       diagnostics: { ...this.diag, logSize: this.log.length },

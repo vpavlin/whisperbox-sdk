@@ -13,6 +13,7 @@ import { mergeOne, mergeWhisperbox, eventKey } from "../../contract/src/merge.mj
 import { Clock } from "../../contract/src/hlc.mjs";
 import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId, formReopenId, responseConfirmBatchId } from "../../contract/src/events.mjs";
 import * as C from "../../contract/src/crypto-portable.mjs";
+import { validateAnswers, emptyAnswer as emptyAnswerOf } from "../../contract/src/answers.mjs";
 import { computeState, creatorView } from "../../engine/src/engine.mjs";
 import { buildInitial, respond } from "../../../third_party/loam-sync/dist/catchup.js";
 
@@ -306,6 +307,8 @@ export class WhisperboxClient {
       whitelist: def.whitelist || { type: "none", value: "" },
       ...(Number.isInteger(def.maxResponses) && def.maxResponses > 0 ? { maxResponses: def.maxResponses } : {}),
       ...(def.showResponseCount === true ? { showResponseCount: true } : {}),
+      ...(typeof def.thankYou === "string" && def.thankYou ? { thankYou: def.thankYou } : {}),
+      ...(def.shuffleQuestions === true ? { shuffleQuestions: true } : {}),
     };
     const e = this.buildEvent(EventType.FORM_PUBLISH, formPublishId(formId), p, true);
     this.adopt(e);
@@ -382,7 +385,8 @@ export class WhisperboxClient {
     if (wl === "addresses" && !whitelistAddresses(f.whitelist).includes(this.identity.address)) return { ok: false, error: "this form only accepts listed addresses" };
     if (wl !== "none" && wl !== "addresses") return { ok: false, error: `whitelist type '${wl}' is not supported` };
     const byQ = new Map(answers.map((a) => [a?.questionId, a?.value]));
-    for (const q of f.questions || []) if (q.required && emptyAnswer(byQ.get(q.id))) return { ok: false, error: "required: " + (q.text || q.id) };
+    const bad = validateAnswers(f.questions, answers);   // types, ranges, required (same rules as the core)
+    if (bad) return { ok: false, error: bad.error };
     const submittedAt = this.now();
     const confirmationId = C.randomHex(8);
     const resp = { formId, respondent: this.identity.address, submittedAt, answers };
@@ -508,7 +512,7 @@ export class WhisperboxClient {
     if (!f) return { ok: false, error: "unknown form" };
     if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
     const cell = (v) => (/[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v);
-    const opt = (q, x) => (typeof x === "number" && q.options && q.options[x] !== undefined ? String(q.options[x]) : x == null ? "" : typeof x === "boolean" ? (x ? "Yes" : "No") : typeof x === "string" ? x : JSON.stringify(x));
+    const opt = (q, x) => (typeof x === "number" && q.options && q.options[x] !== undefined ? String(q.options[x]) : x == null ? "" : typeof x === "boolean" ? (x ? "Yes" : "No") : typeof x === "string" ? x : typeof x === "number" ? String(x) : x && typeof x === "object" && "other" in x ? "Other: " + x.other : JSON.stringify(x));
     const val = (q, v) => (Array.isArray(v) ? v.map((x) => opt(q, x)).join("; ") : opt(q, v));
     const iso = (ms) => (ms > 0 ? new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z") : "");
     const qs = f.questions || [];

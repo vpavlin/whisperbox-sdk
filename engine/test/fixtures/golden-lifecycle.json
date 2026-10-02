@@ -351,6 +351,8 @@
         },
         "maxResponses": 2,
         "showResponseCount": true,
+        "thankYou": "",
+        "shuffleQuestions": false,
         "status": "open",
         "confirmations": [
           "c-capped-150"
@@ -378,6 +380,8 @@
         },
         "maxResponses": null,
         "showResponseCount": false,
+        "thankYou": "",
+        "shuffleQuestions": false,
         "status": "open",
         "confirmations": []
       },
@@ -403,6 +407,8 @@
         },
         "maxResponses": null,
         "showResponseCount": false,
+        "thankYou": "",
+        "shuffleQuestions": false,
         "status": "closed",
         "confirmations": [
           "c-life-150",

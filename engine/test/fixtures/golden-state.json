@@ -33,6 +33,8 @@
       },
       "maxResponses": null,
       "showResponseCount": false,
+      "thankYou": "",
+      "shuffleQuestions": false,
       "status": "open",
       "confirmations": []
     },
@@ -68,6 +70,8 @@
       },
       "maxResponses": null,
       "showResponseCount": false,
+      "thankYou": "",
+      "shuffleQuestions": false,
       "status": "open",
       "confirmations": []
     },
@@ -103,6 +107,8 @@
       },
       "maxResponses": null,
       "showResponseCount": false,
+      "thankYou": "",
+      "shuffleQuestions": false,
       "status": "open",
       "confirmations": [
         "conf-164-3-0"
@@ -140,6 +146,8 @@
       },
       "maxResponses": null,
       "showResponseCount": false,
+      "thankYou": "",
+      "shuffleQuestions": false,
       "status": "open",
       "confirmations": [
         "conf-164-2-0"

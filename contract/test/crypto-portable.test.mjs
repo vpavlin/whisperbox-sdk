@@ -107,3 +107,9 @@ test("keycard form-key path = the Loam domain-path convention (independent re-im
   // and the value Python's hashlib gives for the first id:
   assert.strictEqual(P.keycardFormKeyPath("form-639a2554"), "m/43'/60'/1581'/11022128'/1577926826'/1799408082'/489631137'");
 });
+
+test("answer validation: every case in the shared fixture (C++ parity_test reads the same file)", async () => {
+  const { validateAnswer } = await import("../src/answers.mjs");
+  const doc = JSON.parse(readFileSync(join(fx, "answer-validation.json"), "utf8"));
+  for (const c of doc.cases) assert.strictEqual(validateAnswer(c.q, c.v) === "", c.ok, `${JSON.stringify(c.q)} <- ${JSON.stringify(c.v)}: "${validateAnswer(c.q, c.v)}"`);
+});

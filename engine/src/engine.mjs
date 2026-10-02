@@ -77,6 +77,8 @@ export function computeState(mergedLog, opts = {}) {
           whitelist: p.whitelist ?? { type: "none", value: "" },
           maxResponses: Number.isInteger(p.maxResponses) && p.maxResponses > 0 ? p.maxResponses : null,
           showResponseCount: p.showResponseCount === true,
+          thankYou: typeof p.thankYou === "string" ? p.thankYou : "",
+          shuffleQuestions: p.shuffleQuestions === true,
           status: "open",
           confirmations: [],
         });

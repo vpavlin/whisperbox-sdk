@@ -129,6 +129,8 @@
         },
         "maxResponses": null,
         "showResponseCount": false,
+        "thankYou": "",
+        "shuffleQuestions": false,
         "status": "closed",
         "confirmations": [
           "c1"
@@ -190,6 +192,8 @@
         },
         "maxResponses": null,
         "showResponseCount": false,
+        "thankYou": "",
+        "shuffleQuestions": false,
         "status": "closed",
         "confirmations": [
           "c1"
@@ -246,6 +250,8 @@
         },
         "maxResponses": null,
         "showResponseCount": false,
+        "thankYou": "",
+        "shuffleQuestions": false,
         "status": "closed",
         "confirmations": [],
         "contested": true

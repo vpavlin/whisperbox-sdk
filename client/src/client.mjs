@@ -64,6 +64,7 @@ export class WhisperboxClient {
     this.store = o.store; this.secrets = o.secrets || o.store; this.sendRaw = o.send; this.now = o.now || (() => Date.now());
     this.log = []; this.watched = new Set(); this.pins = {}; this.mySubs = {}; // formId → my receipt id ("" = legacy)
     this.identity = null; this.deviceId = ""; this.clock = null; this.cardKeys = new Map();
+    this.hidden = new Set(); this.myAnswers = {};
     this.nodeReady = false; this.listeners = new Set();
     this.diag = { rxRaw: 0, rxNew: 0, rxDup: 0, txTotal: 0, txErr: 0, admDropSig: 0, admDropType: 0, rbsrRx: 0, legacyReseeds: 0 };
     this.syncTries = 0; this.lastSyncAt = 0; this.lastReserveAt = 0; this.unsent = new Set();
@@ -86,6 +87,8 @@ export class WhisperboxClient {
     this.watched = new Set(parse(await this.store.get("wb-watched"), []));
     this.pins = parse(await this.store.get("wb-pins"), {});
     this.mySubs = parse(await this.store.get("wb-mysubs"), {});
+    this.hidden = new Set(parse(await this.store.get("wb-hidden"), []));
+    this.myAnswers = parse(await this.store.get("wb-myanswers"), {});   // formId -> {answers, submittedAt}
     // Form keys that came from a Keycard (not derivable from the identity): one secret per
     // form ("wb-fk-<formId>"), with the list of ids (not secret) in the plain store.
     this.cardKeys = new Map();
@@ -204,7 +207,12 @@ export class WhisperboxClient {
     this.store.set("wb-watched", JSON.stringify([...this.watched]));
     this.store.set("wb-pins", JSON.stringify(this.pins));
     this.store.set("wb-mysubs", JSON.stringify(this.mySubs));
+    this.store.set("wb-hidden", JSON.stringify([...this.hidden]));
+    this.store.set("wb-myanswers", JSON.stringify(this.myAnswers));
   }
+  /** Hide from my lists (local only; nothing is deleted, unhideForm brings it back). */
+  hideForm(formId) { formId = lc(formId); if (!formId) return { ok: false, error: "formId required" }; this.hidden.add(formId); this.saveMeta(); this.emit(); return { ok: true, formId }; }
+  unhideForm(formId) { formId = lc(formId); this.hidden.delete(formId); this.saveMeta(); this.emit(); return { ok: true, formId }; }
 
   // ── authoring ──────────────────────────────────────────────────────────────────
   buildEvent(type, id, payload, sign) {
@@ -300,7 +308,9 @@ export class WhisperboxClient {
       : { signature: null, pub: null };
     const sealed = C.toHex(C.sealToCreator(null, f.publicKey, JSON.stringify({ ...resp, ...inner, confirmationId })));
     const e = this.buildEvent(EventType.RESPONSE_SUBMIT, responseSubmitId(sealed), { encryptedPayload: sealed }, false);
-    this.mySubs[formId] = confirmationId; this.saveMeta();
+    this.mySubs[formId] = confirmationId;
+    this.myAnswers[formId] = { answers, submittedAt };   // private copy: the sealed blob only opens for the creator
+    this.saveMeta();
     this.adopt(e);
     return { ok: true, eventId: e.id };
   }
@@ -397,12 +407,13 @@ export class WhisperboxClient {
         canRespond: trusted && !mine && !submitted && allowed && f.status === "open" && !!f.publicKey,
         // mine, but no key here to open its answers (Keycard form on a new install): tap to restore
         keyMissing: missing.has(fid), keycard: this.cardKeys.has(fid),
+        hidden: this.hidden.has(fid), ...(this.myAnswers[fid] ? { myAnswers: this.myAnswers[fid] } : {}),
       });
     }
     return {
       v: 1, identity: { address: this.identity.address, pubHex: this.identity.pubHex }, deviceId: this.deviceId,
       nodeReady: this.nodeReady, state: st, creatorView: cv, watched: [...this.watched],
-      pendingForms: [...this.watched].filter((id) => !st.forms[id]), mySubmissions: Object.keys(this.mySubs),
+      pendingForms: [...this.watched].filter((id) => !st.forms[id]), mySubmissions: Object.keys(this.mySubs), hidden: [...this.hidden],
       diagnostics: { ...this.diag, logSize: this.log.length },
     };
   }

@@ -28,6 +28,11 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   assert.strictEqual(a.snapshot().creatorView.responses[fid][0].answers[0].value, "žluťoučký");
   assert.ok(a.confirmResponse(fid, b.identity.address).ok); pump();
   assert.ok(b.snapshot().state.forms[fid].myConfirmed);
+  // hide (local) + my own answers kept
+  assert.ok(b.hideForm(fid).ok && b.snapshot().state.forms[fid].hidden && b.snapshot().hidden.includes(fid));
+  assert.ok(!a.snapshot().state.forms[fid].hidden, "hiding is local");
+  assert.strictEqual(b.snapshot().state.forms[fid].myAnswers.answers[0].value, "žluťoučký");
+  assert.ok(b.unhideForm(fid).ok && !b.snapshot().state.forms[fid].hidden);
   for (const c of [a, b]) c.tick();
   assert.strictEqual((a.lastError || "") + (b.lastError || ""), "", "no swallowed errors");
 });

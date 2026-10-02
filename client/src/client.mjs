@@ -327,6 +327,7 @@ export class WhisperboxClient {
     if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
     if (f.status === "open") return { ok: false, error: "form is already open" };
     if (f.expiresAt != null && this.now() > f.expiresAt) return { ok: false, error: "its end date has passed - duplicate it as a new form" };
+    if (f.maxResponses && (this.decrypt(this.state()).responses[formId] || []).length >= f.maxResponses) return { ok: false, error: "it reached its answer limit - duplicate it as a new form" };
     this.adopt(this.buildEvent(EventType.FORM_REOPEN, formReopenId(formId, C.randomHex(6)), { formId, author: this.identity.address }, true));
     return { ok: true };
   }

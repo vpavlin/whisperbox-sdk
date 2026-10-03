@@ -10,7 +10,7 @@ import { eciesOpen } from "../../contract/src/crypto.mjs";
 import { computeState, creatorView } from "../src/engine.mjs";
 import { mulberry32, generateWorld, partitionLogs, goldenCreator } from "./_world.mjs";
 import { toHex, identityFromPriv, signEvent, sealToCreator } from "../../contract/src/crypto.mjs";
-import { evFormPublish, evFormClose, evResponseConfirm, evFormReopen, evResponseConfirmBatch, evResponseSubmit } from "../../contract/src/events.mjs";
+import { evFormPublish, evFormClose, evResponseConfirm, evFormReopen, evResponseConfirmBatch, evResponseSubmit, evFormUpdate } from "../../contract/src/events.mjs";
 import { mergeOne } from "../../contract/src/merge.mjs";
 import { signInner, verifyInner } from "../../contract/src/crypto-portable.mjs";
 
@@ -109,6 +109,15 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
     resp("editable", addr(3), 4500),                                  // unsigned: sig-invalid
     signedResp("editable", R5, 5000, true, "c-r5"),
     forgedResp("editable", R5, R4, 6000, false),                      // R4 signs an "edit" of R5's answer: sig-invalid
+    // ── edit after publishing: the latest update wins; only the creator may update ──
+    form("edited"),
+    sign(evFormUpdate({ ...at(7000), formId: "edited", author: C.address, nonce: "u1", form: { title: "edited v2", description: "now with Q2",
+      questions: [{ id: "q1", type: "boolean", text: "ok? (reworded)", required: true }, { id: "q2", type: "scale", text: "how much?", required: false, min: 0, max: 10 }],
+      maxResponses: 50, allowEdits: true } })),
+    { ...evFormUpdate({ ...at(7500), formId: "edited", author: R4.address, nonce: "x", form: { title: "HIJACKED" } }), ...signEvent(R4, evFormUpdate({ ...at(7500), formId: "edited", author: R4.address, nonce: "x", form: { title: "HIJACKED" } })) },
+    sign(evFormUpdate({ ...at(8000), formId: "edited", author: C.address, nonce: "u2", form: { title: "edited v3", description: "now with Q2",
+      questions: [{ id: "q1", type: "boolean", text: "ok? (reworded)", required: true }, { id: "q2", type: "scale", text: "how much?", required: false, min: 0, max: 10 }],
+      thankYou: "thanks!" } })),
   ];
   const log = []; for (const e of evs) mergeOne(log, e);
   const st = computeState(log, { identity: C.address });

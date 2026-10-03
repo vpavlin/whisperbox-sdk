@@ -43,6 +43,26 @@ function drop(dropped, reason) {
  *        redelivered copies of your own submissions).
  * @returns {State}  { v, forms, feed, responses, creator?, pending, dropped }
  */
+/** The fields a creator may change with form.update - normalized the same way on
+ *  publish and on update (mirror whisperbox_engine.hpp editableFields). */
+export function editableFields(p) {
+  return {
+    title: typeof p.title === "string" ? p.title : "",
+    description: typeof p.description === "string" ? p.description : "",
+    expiresAt: typeof p.expiresAt === "number" ? p.expiresAt : null,
+    questions: Array.isArray(p.questions) ? p.questions : [],
+    whitelist: p.whitelist && typeof p.whitelist === "object" ? p.whitelist : { type: "none", value: "" },
+    maxResponses: Number.isInteger(p.maxResponses) && p.maxResponses > 0 ? p.maxResponses : null,
+    showResponseCount: p.showResponseCount === true,
+    thankYou: typeof p.thankYou === "string" ? p.thankYou : "",
+    shuffleQuestions: p.shuffleQuestions === true,
+    // answer edits: the same (signed) respondent may replace their answer for
+    // editWindowMinutes after first sending it, until the creator sends a receipt
+    allowEdits: p.allowEdits === true,
+    editWindowMinutes: p.allowEdits === true ? (Number.isInteger(p.editWindowMinutes) && p.editWindowMinutes > 0 ? p.editWindowMinutes : 15) : null,
+  };
+}
+
 export function computeState(mergedLog, opts = {}) {
   const identity = opts.identity ? lc(opts.identity) : null;
   const verify = typeof opts.verify === "function" ? opts.verify : null;
@@ -68,22 +88,12 @@ export function computeState(mergedLog, opts = {}) {
         const formId = lc(p.id);
         const newView = () => ({
           id: formId,
-          title: p.title,
-          description: p.description,
           creator: lc(p.creator),
           publicKey: p.publicKey,
           createdAt: p.createdAt,
-          expiresAt: p.expiresAt ?? null,
-          questions: p.questions ?? [],
-          whitelist: p.whitelist ?? { type: "none", value: "" },
-          maxResponses: Number.isInteger(p.maxResponses) && p.maxResponses > 0 ? p.maxResponses : null,
-          showResponseCount: p.showResponseCount === true,
-          thankYou: typeof p.thankYou === "string" ? p.thankYou : "",
-          shuffleQuestions: p.shuffleQuestions === true,
-          // answer edits: the same (signed) respondent may replace their answer for
-          // editWindowMinutes after first sending it, until the creator sends a receipt
-          allowEdits: p.allowEdits === true,
-          editWindowMinutes: p.allowEdits === true ? (Number.isInteger(p.editWindowMinutes) && p.editWindowMinutes > 0 ? p.editWindowMinutes : 15) : null,
+          ...editableFields(p),
+          version: 1,          // +1 per form.update
+          updatedAt: null,     // hlc.wall of the latest update
           status: "open",
           confirmations: [],
         });
@@ -118,7 +128,8 @@ export function computeState(mergedLog, opts = {}) {
       }
       case EventType.RESPONSE_CONFIRM:
       case EventType.FORM_CLOSE:
-      case EventType.FORM_REOPEN: {
+      case EventType.FORM_REOPEN:
+      case EventType.FORM_UPDATE: {
         if (verify && e.sig && !verify(e)) { drop(dropped, "sig-invalid"); return; }
         const formId = lc(p.formId);
         let f = forms[formId];
@@ -127,6 +138,13 @@ export function computeState(mergedLog, opts = {}) {
           const alt = alts[formId] && alts[formId][lc(p.author)];
           if (!alt) { drop(dropped, "not-creator"); return; }
           f = alt; // a contender's own close/confirm applies to its own copy
+        }
+        if (e.type === EventType.FORM_UPDATE) {
+          // log is HLC-ordered: the latest update wins; status / receipts / closes stay
+          Object.assign(f, editableFields(p.form && typeof p.form === "object" ? p.form : {}));
+          f.version += 1;
+          f.updatedAt = e.hlc?.wall ?? null;
+          return;
         }
         if (e.type === EventType.RESPONSE_CONFIRM) {
           // single receipt, or many in one event ("confirm all")

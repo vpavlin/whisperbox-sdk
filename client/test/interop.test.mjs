@@ -116,7 +116,13 @@ for (const layers of [1, 0]) {
       assert.strictEqual(phone.confirmAll(fQ).events, 1);
       assert.ok(await until(b, async () => (await b.call("snapshot")).state.forms[fQ].myConfirmed), "desktop sees its receipt from a JS batch event");
 
-      // 7. share links are identical on both sides
+      // 7. edit after publishing, both directions
+      assert.ok((await b.call("updateForm", [fL, JSON.stringify({ title: "Lifecycle v2", questions: [{ id: "q1", type: "boolean", text: "Coming? (v2)", required: true }] })])).ok);
+      assert.ok(await until(b, () => phone.snapshot().state.forms[fL].title === "Lifecycle v2" && phone.snapshot().state.forms[fL].version === 2), "phone folds the desktop's form.update");
+      assert.ok(phone.updateForm(fQ, { title: "Phone lifecycle v2", questions: [{ id: "q1", type: "boolean", text: "Ok? (v2)", required: true }] }).ok);
+      assert.ok(await until(b, async () => (await b.call("snapshot")).state.forms[fQ].title === "Phone lifecycle v2"), "desktop folds the phone's form.update");
+
+      // 8. share links are identical on both sides
       assert.strictEqual(phone.shareUri(fA).uri, (await b.call("shareUri", [fA])).uri);
     } finally { b.close(); }
   });

@@ -116,11 +116,11 @@
     "forms": {
       "fs": {
         "id": "fs",
-        "title": "genuine",
-        "description": "",
         "creator": "0x32ec978fd7a4ac80213987a41ec2bf8965a94ba1",
         "publicKey": "021fd6be0778e67f3c54cd0e43ac432da5e00ee30ffe7e2dd14d3635c7eff96e00",
         "createdAt": 100,
+        "title": "genuine",
+        "description": "",
         "expiresAt": null,
         "questions": [],
         "whitelist": {
@@ -133,6 +133,8 @@
         "shuffleQuestions": false,
         "allowEdits": false,
         "editWindowMinutes": null,
+        "version": 1,
+        "updatedAt": null,
         "status": "closed",
         "confirmations": [
           "c1"
@@ -190,11 +192,11 @@
     "forms": {
       "fs": {
         "id": "fs",
-        "title": "genuine",
-        "description": "",
         "creator": "0x32ec978fd7a4ac80213987a41ec2bf8965a94ba1",
         "publicKey": "021fd6be0778e67f3c54cd0e43ac432da5e00ee30ffe7e2dd14d3635c7eff96e00",
         "createdAt": 100,
+        "title": "genuine",
+        "description": "",
         "expiresAt": null,
         "questions": [],
         "whitelist": {
@@ -207,6 +209,8 @@
         "shuffleQuestions": false,
         "allowEdits": false,
         "editWindowMinutes": null,
+        "version": 1,
+        "updatedAt": null,
         "status": "closed",
         "confirmations": [
           "c1"
@@ -259,11 +263,11 @@
     "forms": {
       "fs": {
         "id": "fs",
-        "title": "squat",
-        "description": "",
         "creator": "0x7b187135f4f884cf654a2d903884b8b1bcbce46d",
         "publicKey": "03c4a8bed945b0342ffacc3ceda6d25948a6c08933c2bb8315fe3b987abfdc318e",
         "createdAt": 50,
+        "title": "squat",
+        "description": "",
         "expiresAt": null,
         "questions": [],
         "whitelist": {
@@ -276,6 +280,8 @@
         "shuffleQuestions": false,
         "allowEdits": false,
         "editWindowMinutes": null,
+        "version": 1,
+        "updatedAt": null,
         "status": "closed",
         "confirmations": [],
         "contested": true

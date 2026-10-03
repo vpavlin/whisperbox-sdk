@@ -36,6 +36,7 @@ export const EventType = Object.freeze({
   RESPONSE_CONFIRM: "response.confirm",
   FORM_CLOSE: "form.close",
   FORM_REOPEN: "form.reopen",   // 0.3.2+: creator re-opens a closed form
+  FORM_UPDATE: "form.update",   // 0.3.6+: creator edits a published form (latest wins)
 });
 
 // Events only the form's creator may author (gated). Gating: payload.author ==
@@ -44,6 +45,7 @@ export const CREATOR_GATED = new Set([
   EventType.RESPONSE_CONFIRM,
   EventType.FORM_CLOSE,
   EventType.FORM_REOPEN,
+  EventType.FORM_UPDATE,
 ]);
 
 // Open events: any participant may author; no event-level signature allowed.
@@ -65,6 +67,7 @@ export const responseConfirmId = (formId, confirmationId) =>
 // close:<formId> would be deduplicated away). The bare form is kept for old events.
 export const formCloseId = (formId, nonce) => (nonce ? `close:${lc(formId)}:${nonce}` : `close:${lc(formId)}`);
 export const formReopenId = (formId, nonce) => `reopen:${lc(formId)}:${nonce}`;
+export const formUpdateId = (formId, nonce) => `update:${lc(formId)}:${nonce}`;
 /** One receipt event for many responses ("confirm all"): content-addressed by the ids. */
 export const responseConfirmBatchId = (formId, confirmationIds) =>
   `confirm:${lc(formId)}:b:${bytesToHex(sha256(utf8ToBytes([...confirmationIds].sort().join(",")))).slice(0, 16)}`;
@@ -150,5 +153,18 @@ export function evResponseConfirmBatch({ hlc, dev, formId, confirmationIds, auth
     hlc,
     dev,
     payload: { formId: lc(formId), confirmationIds: [...confirmationIds], author: lc(author) },
+  };
+}
+
+/** Edit a published form (creator-gated): `form` carries the full new definition
+ *  (title, description, questions, whitelist, settings). id / creator / key never change. */
+export function evFormUpdate({ hlc, dev, formId, author, form, nonce }) {
+  return {
+    v: 1,
+    id: formUpdateId(formId, nonce),
+    type: EventType.FORM_UPDATE,
+    hlc,
+    dev,
+    payload: { formId: lc(formId), author: lc(author), form: { ...form } },
   };
 }

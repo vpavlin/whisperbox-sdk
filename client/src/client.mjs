@@ -11,7 +11,7 @@
 //   catch-up (fp/ids/need) over event keys.
 import { mergeOne, mergeWhisperbox, eventKey } from "../../contract/src/merge.mjs";
 import { Clock } from "../../contract/src/hlc.mjs";
-import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId, formReopenId, responseConfirmBatchId } from "../../contract/src/events.mjs";
+import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId, formReopenId, formUpdateId, responseConfirmBatchId } from "../../contract/src/events.mjs";
 import * as C from "../../contract/src/crypto-portable.mjs";
 import { validateAnswers, emptyAnswer as emptyAnswerOf } from "../../contract/src/answers.mjs";
 import { computeState, creatorView } from "../../engine/src/engine.mjs";
@@ -34,6 +34,19 @@ function b64decode(s) {
 const confirmIdLegacy = (formId, respondent) => C.sha256Hex(lc(formId) + "|" + lc(respondent)).slice(0, 16);
 function confirmIdOf(r, formId) {
   return typeof r.confirmationId === "string" && r.confirmationId ? r.confirmationId : confirmIdLegacy(formId, r.respondent);
+}
+// Definition fields set on publish and changeable with form.update (same as the core).
+function editableFromDef(def) {
+  return {
+    title: typeof def.title === "string" ? def.title : "", description: typeof def.description === "string" ? def.description : "",
+    expiresAt: typeof def.expiresAt === "number" ? def.expiresAt : null, questions: Array.isArray(def.questions) ? def.questions : [],
+    whitelist: def.whitelist && typeof def.whitelist === "object" ? def.whitelist : { type: "none", value: "" },
+    ...(Number.isInteger(def.maxResponses) && def.maxResponses > 0 ? { maxResponses: def.maxResponses } : {}),
+    ...(def.showResponseCount === true ? { showResponseCount: true } : {}),
+    ...(typeof def.thankYou === "string" && def.thankYou ? { thankYou: def.thankYou } : {}),
+    ...(def.shuffleQuestions === true ? { shuffleQuestions: true } : {}),
+    ...(def.allowEdits === true ? { allowEdits: true, editWindowMinutes: Number.isInteger(def.editWindowMinutes) && def.editWindowMinutes > 0 ? def.editWindowMinutes : 15 } : {}),
+  };
 }
 function emptyAnswer(v) {
   return v === null || v === undefined || (typeof v === "string" && v.trim() === "") || (Array.isArray(v) && v.length === 0);
@@ -209,7 +222,7 @@ export class WhisperboxClient {
   }
   // Admission gates (mirror WhisperboxCoreImpl::admitEvent).
   admit(e) {
-    if (e.type === EventType.FORM_PUBLISH || e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.FORM_CLOSE || e.type === EventType.FORM_REOPEN) {
+    if (e.type === EventType.FORM_PUBLISH || e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.FORM_CLOSE || e.type === EventType.FORM_REOPEN || e.type === EventType.FORM_UPDATE) {
       if (!C.verifyEvent(e)) { this.diag.admDropSig++; return false; }
       return true;
     }
@@ -309,19 +322,24 @@ export class WhisperboxClient {
       publicKey = ck.pubHex;
     }
     const p = {
-      id: formId, title: def.title || "", description: def.description || "",
+      id: formId,
       // Sealing key = this form's OWN key: derived from the identity, or exported from a Keycard.
       creator: this.identity.address, publicKey, createdAt: this.now(),
-      expiresAt: def.expiresAt ?? null, questions: Array.isArray(def.questions) ? def.questions : [],
-      whitelist: def.whitelist || { type: "none", value: "" },
-      ...(Number.isInteger(def.maxResponses) && def.maxResponses > 0 ? { maxResponses: def.maxResponses } : {}),
-      ...(def.showResponseCount === true ? { showResponseCount: true } : {}),
-      ...(typeof def.thankYou === "string" && def.thankYou ? { thankYou: def.thankYou } : {}),
-      ...(def.shuffleQuestions === true ? { shuffleQuestions: true } : {}),
-      ...(def.allowEdits === true ? { allowEdits: true, editWindowMinutes: Number.isInteger(def.editWindowMinutes) && def.editWindowMinutes > 0 ? def.editWindowMinutes : 15 } : {}),
+      ...editableFromDef(def),
     };
     const e = this.buildEvent(EventType.FORM_PUBLISH, formPublishId(formId), p, true);
     this.adopt(e);
+    return { ok: true, formId };
+  }
+  /** Edit a published form (creator): the full new definition, latest wins everywhere.
+   *  Keep existing questions' ids - answers are stored by question id. */
+  updateForm(formId, def) {
+    formId = lc(formId);
+    if (!def || typeof def !== "object") return { ok: false, error: "def must be an object" };
+    const f = this.state().forms[formId];
+    if (!f) return { ok: false, error: "unknown form" };
+    if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
+    this.adopt(this.buildEvent(EventType.FORM_UPDATE, formUpdateId(formId, C.randomHex(6)), { formId, author: this.identity.address, form: editableFromDef(def) }, true));
     return { ok: true, formId };
   }
   closeForm(formId) {

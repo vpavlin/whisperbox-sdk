@@ -111,6 +111,40 @@
     },
     {
       "v": 1,
+      "id": "form:edited",
+      "type": "form.publish",
+      "hlc": {
+        "wall": 100,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "id": "edited",
+        "title": "edited",
+        "description": "",
+        "creator": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
+        "publicKey": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
+        "createdAt": 100,
+        "questions": [
+          {
+            "id": "q1",
+            "type": "boolean",
+            "text": "ok?",
+            "required": true
+          }
+        ],
+        "whitelist": {
+          "type": "none",
+          "value": ""
+        },
+        "signature": null
+      },
+      "pub": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
+      "sig": "d65b9032ffddc503a73392a15eb90fe871ab6d2049932d6d071d67bbcc5d2d991b59457073306889d4586f86b2b907d4ee954eceb507a31857c412f35409b580"
+    },
+    {
+      "v": 1,
       "id": "form:life",
       "type": "form.publish",
       "hlc": {
@@ -465,6 +499,103 @@
     },
     {
       "v": 1,
+      "id": "update:edited:u1",
+      "type": "form.update",
+      "hlc": {
+        "wall": 7000,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "formId": "edited",
+        "author": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
+        "form": {
+          "title": "edited v2",
+          "description": "now with Q2",
+          "questions": [
+            {
+              "id": "q1",
+              "type": "boolean",
+              "text": "ok? (reworded)",
+              "required": true
+            },
+            {
+              "id": "q2",
+              "type": "scale",
+              "text": "how much?",
+              "required": false,
+              "min": 0,
+              "max": 10
+            }
+          ],
+          "maxResponses": 50,
+          "allowEdits": true
+        }
+      },
+      "pub": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
+      "sig": "38a2f23083dfcbe66b2e5ce714bccfc98cd349a775b0926f3e1e8f553141252e0408c26903b33c477903fc06ff9244438ca5168ae68833afd5aaf8e788909b6f"
+    },
+    {
+      "v": 1,
+      "id": "update:edited:x",
+      "type": "form.update",
+      "hlc": {
+        "wall": 7500,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "formId": "edited",
+        "author": "0x98db005309e1115198ef4a99294dd6829a7a5607",
+        "form": {
+          "title": "HIJACKED"
+        }
+      },
+      "pub": "022ae498c33d952545fdd6d4dd6d8ddcaf8a5f8ccd28f306b33b18e4131f142824",
+      "sig": "fc70bed5711083eaae7630b8701a2cdf08be20c119692e32a500e0a56253c2c713152fb218913ebd1d874ed78f0d4eb6e330c0ef2625d29044bb4c646d6559b5"
+    },
+    {
+      "v": 1,
+      "id": "update:edited:u2",
+      "type": "form.update",
+      "hlc": {
+        "wall": 8000,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "formId": "edited",
+        "author": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
+        "form": {
+          "title": "edited v3",
+          "description": "now with Q2",
+          "questions": [
+            {
+              "id": "q1",
+              "type": "boolean",
+              "text": "ok? (reworded)",
+              "required": true
+            },
+            {
+              "id": "q2",
+              "type": "scale",
+              "text": "how much?",
+              "required": false,
+              "min": 0,
+              "max": 10
+            }
+          ],
+          "thankYou": "thanks!"
+        }
+      },
+      "pub": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
+      "sig": "4daff17c01cf3120995a82df52acdbe95678cfb795d3a2919bb395f89e4cc7f26e182a2c7ece6a4944e844eda7e9fcf60dac1645229d25a7f603d0f1e35c1c49"
+    },
+    {
+      "v": 1,
       "id": "resp:0e6ce07091ec426fcfdb5b437d94f29429e02adf4a9a20836d02c686e4d2ad09",
       "type": "response.submit",
       "hlc": {
@@ -497,11 +628,11 @@
     "forms": {
       "capped": {
         "id": "capped",
-        "title": "capped",
-        "description": "",
         "creator": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
         "publicKey": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
         "createdAt": 100,
+        "title": "capped",
+        "description": "",
         "expiresAt": null,
         "questions": [
           {
@@ -521,6 +652,8 @@
         "shuffleQuestions": false,
         "allowEdits": false,
         "editWindowMinutes": null,
+        "version": 1,
+        "updatedAt": null,
         "status": "open",
         "confirmations": [
           "c-capped-150"
@@ -528,11 +661,11 @@
       },
       "dated": {
         "id": "dated",
-        "title": "dated",
-        "description": "",
         "creator": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
         "publicKey": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
         "createdAt": 100,
+        "title": "dated",
+        "description": "",
         "expiresAt": 500,
         "questions": [
           {
@@ -552,16 +685,18 @@
         "shuffleQuestions": false,
         "allowEdits": false,
         "editWindowMinutes": null,
+        "version": 1,
+        "updatedAt": null,
         "status": "open",
         "confirmations": []
       },
       "editable": {
         "id": "editable",
-        "title": "editable",
-        "description": "",
         "creator": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
         "publicKey": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
         "createdAt": 100,
+        "title": "editable",
+        "description": "",
         "expiresAt": null,
         "questions": [
           {
@@ -581,18 +716,59 @@
         "shuffleQuestions": false,
         "allowEdits": true,
         "editWindowMinutes": 15,
+        "version": 1,
+        "updatedAt": null,
         "status": "open",
         "confirmations": [
           "c-r2"
         ]
       },
-      "life": {
-        "id": "life",
-        "title": "life",
-        "description": "",
+      "edited": {
+        "id": "edited",
         "creator": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
         "publicKey": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
         "createdAt": 100,
+        "title": "edited v3",
+        "description": "now with Q2",
+        "expiresAt": null,
+        "questions": [
+          {
+            "id": "q1",
+            "type": "boolean",
+            "text": "ok? (reworded)",
+            "required": true
+          },
+          {
+            "id": "q2",
+            "type": "scale",
+            "text": "how much?",
+            "required": false,
+            "min": 0,
+            "max": 10
+          }
+        ],
+        "whitelist": {
+          "type": "none",
+          "value": ""
+        },
+        "maxResponses": null,
+        "showResponseCount": false,
+        "thankYou": "thanks!",
+        "shuffleQuestions": false,
+        "allowEdits": false,
+        "editWindowMinutes": null,
+        "version": 3,
+        "updatedAt": 8000,
+        "status": "open",
+        "confirmations": []
+      },
+      "life": {
+        "id": "life",
+        "creator": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
+        "publicKey": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
+        "createdAt": 100,
+        "title": "life",
+        "description": "",
         "expiresAt": null,
         "questions": [
           {
@@ -612,6 +788,8 @@
         "shuffleQuestions": false,
         "allowEdits": false,
         "editWindowMinutes": null,
+        "version": 1,
+        "updatedAt": null,
         "status": "closed",
         "confirmations": [
           "c-life-150",
@@ -622,7 +800,8 @@
     "feed": [
       "capped",
       "dated",
-      "editable"
+      "editable",
+      "edited"
     ],
     "responses": [
       {
@@ -844,6 +1023,7 @@
         "capped",
         "dated",
         "editable",
+        "edited",
         "life"
       ]
     },
@@ -852,8 +1032,10 @@
       "events": []
     },
     "dropped": {
-      "count": 0,
-      "reasons": {}
+      "count": 1,
+      "reasons": {
+        "not-creator": 1
+      }
     }
   },
   "view": {
@@ -862,6 +1044,7 @@
       "capped",
       "dated",
       "editable",
+      "edited",
       "life"
     ],
     "responses": {
@@ -976,6 +1159,7 @@
           "edits": 0
         }
       ],
+      "edited": [],
       "life": [
         {
           "respondent": "0x0000000000000000000000000000000000000001",
@@ -1021,6 +1205,7 @@
       "editable": [
         "c-r2"
       ],
+      "edited": [],
       "life": [
         "c-life-150",
         "c-life-350"

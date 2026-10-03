@@ -35,6 +35,8 @@
       "showResponseCount": false,
       "thankYou": "",
       "shuffleQuestions": false,
+      "allowEdits": false,
+      "editWindowMinutes": null,
       "status": "open",
       "confirmations": []
     },
@@ -72,6 +74,8 @@
       "showResponseCount": false,
       "thankYou": "",
       "shuffleQuestions": false,
+      "allowEdits": false,
+      "editWindowMinutes": null,
       "status": "open",
       "confirmations": []
     },
@@ -109,6 +113,8 @@
       "showResponseCount": false,
       "thankYou": "",
       "shuffleQuestions": false,
+      "allowEdits": false,
+      "editWindowMinutes": null,
       "status": "open",
       "confirmations": [
         "conf-164-3-0"
@@ -148,6 +154,8 @@
       "showResponseCount": false,
       "thankYou": "",
       "shuffleQuestions": false,
+      "allowEdits": false,
+      "editWindowMinutes": null,
       "status": "open",
       "confirmations": [
         "conf-164-2-0"
@@ -326,6 +334,22 @@
   ],
   "closeHlc": {},
   "closedSpans": {},
+  "receiptHlc": {
+    "f-164-3": {
+      "conf-164-3-0": {
+        "wall": 1700000000794,
+        "ctr": 0,
+        "dev": "dev-b"
+      }
+    },
+    "f-164-2": {
+      "conf-164-2-0": {
+        "wall": 1700000000485,
+        "ctr": 0,
+        "dev": "dev-b"
+      }
+    }
+  },
   "creator": {
     "address": "0x0d97e55b942f72d9c4b2ba47b60ea4aff3e8fdb3",
     "forms": [

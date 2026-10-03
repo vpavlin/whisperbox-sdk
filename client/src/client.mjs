@@ -318,6 +318,7 @@ export class WhisperboxClient {
       ...(def.showResponseCount === true ? { showResponseCount: true } : {}),
       ...(typeof def.thankYou === "string" && def.thankYou ? { thankYou: def.thankYou } : {}),
       ...(def.shuffleQuestions === true ? { shuffleQuestions: true } : {}),
+      ...(def.allowEdits === true ? { allowEdits: true, editWindowMinutes: Number.isInteger(def.editWindowMinutes) && def.editWindowMinutes > 0 ? def.editWindowMinutes : 15 } : {}),
     };
     const e = this.buildEvent(EventType.FORM_PUBLISH, formPublishId(formId), p, true);
     this.adopt(e);
@@ -385,7 +386,17 @@ export class WhisperboxClient {
     if (!f) return { ok: false, error: "unknown form" };
     if (f.status !== "open") return { ok: false, error: "form is closed" };
     if (f.expiresAt != null && this.now() > f.expiresAt) return { ok: false, error: "this form closed at its end date" };
-    if (formId in this.mySubs) return { ok: false, error: "you already answered this form" };
+    // Answer edits (same rule as the creator's view): within the window after the FIRST
+    // answer, before the creator's receipt; reuses the receipt id; always signed.
+    let isEdit = false, firstAt = 0;
+    if (formId in this.mySubs) {
+      if (!f.allowEdits) return { ok: false, error: "you already answered this form" };
+      firstAt = this.myAnswers[formId]?.firstSubmittedAt ?? this.myAnswers[formId]?.submittedAt ?? 0;
+      const cid0 = this.mySubs[formId];
+      if (cid0 && (f.confirmations || []).includes(cid0)) return { ok: false, error: "the creator already sent you a receipt - your answer is final" };
+      if (!firstAt || this.now() - firstAt > (f.editWindowMinutes || 15) * 60000) return { ok: false, error: "the time to edit your answer is over" };
+      isEdit = true;
+    }
     if (!f.publicKey) return { ok: false, error: "form not synced yet - try again in a moment" };
     const pin = this.pins[formId] || "";
     if (pin && pin !== f.creator) return { ok: false, error: "this form's creator doesn't match the link you opened - refusing to send answers" };
@@ -397,15 +408,15 @@ export class WhisperboxClient {
     const bad = validateAnswers(f.questions, answers);   // types, ranges, required (same rules as the core)
     if (bad) return { ok: false, error: bad.error };
     const submittedAt = this.now();
-    const confirmationId = C.randomHex(8);
+    const confirmationId = isEdit && this.mySubs[formId] ? this.mySubs[formId] : C.randomHex(8);
     const resp = { formId, respondent: this.identity.address, submittedAt, answers };
-    const inner = wl !== "none"
+    const inner = wl !== "none" || f.allowEdits   // editable forms are signed: nobody can "edit" someone else's answer
       ? { signature: C.signInner(this.identity, resp), pub: this.identity.pubHex }
       : { signature: null, pub: null };
     const sealed = C.toHex(C.sealToCreator(null, f.publicKey, JSON.stringify({ ...resp, ...inner, confirmationId })));
     const e = this.buildEvent(EventType.RESPONSE_SUBMIT, responseSubmitId(sealed), { encryptedPayload: sealed }, false);
     this.mySubs[formId] = confirmationId;
-    this.myAnswers[formId] = { answers, submittedAt };   // private copy: the sealed blob only opens for the creator
+    this.myAnswers[formId] = { answers, submittedAt, firstSubmittedAt: isEdit ? firstAt : submittedAt };   // private copy: the sealed blob only opens for the creator
     this.saveMeta();
     if (this.answerDrafts[formId]) { delete this.answerDrafts[formId]; this.saveDrafts(); }
     this.adopt(e);
@@ -506,6 +517,11 @@ export class WhisperboxClient {
         // mine, but no key here to open its answers (Keycard form on a new install): tap to restore
         keyMissing: missing.has(fid), keycard: this.cardKeys.has(fid),
         hidden: this.hidden.has(fid), ...(this.myAnswers[fid] ? { myAnswers: this.myAnswers[fid] } : {}),
+        ...(submitted && f.allowEdits && this.myAnswers[fid] ? (() => {
+          const until = (this.myAnswers[fid].firstSubmittedAt ?? this.myAnswers[fid].submittedAt) + (f.editWindowMinutes || 15) * 60000;
+          const confirmedNow = submitted && (f.confirmations || []).includes(cid);
+          return { editUntil: until, canEdit: !confirmedNow && f.status === "open" && this.now() < until };
+        })() : {}),
         ...(mine ? (() => {   // "N new" since the creator last looked
           const n = (cv?.responses?.[fid] || []).length;
           if (this.seen[fid] === undefined) { this.seen[fid] = n; seenDirty = true; }

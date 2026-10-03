@@ -131,6 +131,8 @@
         "showResponseCount": false,
         "thankYou": "",
         "shuffleQuestions": false,
+        "allowEdits": false,
+        "editWindowMinutes": null,
         "status": "closed",
         "confirmations": [
           "c1"
@@ -158,6 +160,15 @@
           "to": null
         }
       ]
+    },
+    "receiptHlc": {
+      "fs": {
+        "c1": {
+          "wall": 310,
+          "ctr": 0,
+          "dev": "d"
+        }
+      }
     },
     "creator": {
       "address": "0x32ec978fd7a4ac80213987a41ec2bf8965a94ba1",
@@ -194,6 +205,8 @@
         "showResponseCount": false,
         "thankYou": "",
         "shuffleQuestions": false,
+        "allowEdits": false,
+        "editWindowMinutes": null,
         "status": "closed",
         "confirmations": [
           "c1"
@@ -221,6 +234,15 @@
           "to": null
         }
       ]
+    },
+    "receiptHlc": {
+      "fs": {
+        "c1": {
+          "wall": 310,
+          "ctr": 0,
+          "dev": "d"
+        }
+      }
     },
     "creator": null,
     "pending": {
@@ -252,6 +274,8 @@
         "showResponseCount": false,
         "thankYou": "",
         "shuffleQuestions": false,
+        "allowEdits": false,
+        "editWindowMinutes": null,
         "status": "closed",
         "confirmations": [],
         "contested": true
@@ -278,6 +302,7 @@
         }
       ]
     },
+    "receiptHlc": {},
     "creator": null,
     "pending": {
       "count": 0,

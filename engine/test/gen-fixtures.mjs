@@ -12,6 +12,7 @@ import { mulberry32, generateWorld, partitionLogs, goldenCreator } from "./_worl
 import { toHex, identityFromPriv, signEvent, sealToCreator } from "../../contract/src/crypto.mjs";
 import { evFormPublish, evFormClose, evResponseConfirm, evFormReopen, evResponseConfirmBatch, evResponseSubmit } from "../../contract/src/events.mjs";
 import { mergeOne } from "../../contract/src/merge.mjs";
+import { signInner, verifyInner } from "../../contract/src/crypto-portable.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 mkdirSync(join(here, "fixtures"), { recursive: true });
@@ -74,6 +75,16 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
     return evResponseSubmit({ ...at(wall), encryptedPayload: toHex(sealToCreator(null, C.pubHex, pt, { ephPriv: sh("eph" + fid + wall), deterministic: true })) });
   };
   const addr = (i) => "0x" + String(i).padStart(40, "0");
+  const R1 = identityFromPriv(sh("edit-r1")), R2 = identityFromPriv(sh("edit-r2")), R4 = identityFromPriv(sh("edit-r4")), R5 = identityFromPriv(sh("edit-r5"));
+  const sealResp = (fid, body, wall) => evResponseSubmit({ ...at(wall), encryptedPayload: toHex(sealToCreator(null, C.pubHex, JSON.stringify(body), { ephPriv: sh("eph" + fid + wall + body.respondent), deterministic: true })) });
+  const signedResp = (fid, who, wall, v, cid) => {
+    const r = { formId: fid, respondent: who.address, submittedAt: wall, answers: [{ questionId: "q1", value: v }] };
+    return sealResp(fid, { ...r, signature: signInner(who, r), pub: who.pubHex, confirmationId: cid }, wall);
+  };
+  const forgedResp = (fid, victim, signer, wall, v) => {
+    const r = { formId: fid, respondent: victim.address, submittedAt: wall, answers: [{ questionId: "q1", value: v }] };
+    return sealResp(fid, { ...r, signature: signInner(signer, r), pub: signer.pubHex, confirmationId: "c-forged" }, wall);
+  };
   const evs = [
     form("life"), form("capped", { maxResponses: 2, showResponseCount: true }), form("dated", { expiresAt: 500 }),
     resp("life", addr(1), 150),                                                            // open: counts
@@ -87,11 +98,23 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
     resp("dated", addr(8), 450), resp("dated", addr(9), 550),                              // 2nd: after expiresAt
     sign(evResponseConfirm({ ...at(600), formId: "capped", confirmationId: "c-capped-150", author: C.address })),
     sign(evResponseConfirmBatch({ ...at(610), formId: "life", confirmationIds: ["c-life-150", "c-life-350"], author: C.address })),
+    // ── answer edits: 15-minute window, locked by a receipt, signed by the respondent ──
+    form("editable", { allowEdits: true, editWindowMinutes: 15 }),
+    signedResp("editable", R1, 1000, true, "c-r1"),                  // first answer
+    signedResp("editable", R1, 1000 + 60000, false, "c-r1"),         // edit 1 min later: replaces it
+    signedResp("editable", R1, 1000 + 16 * 60000, true, "c-r1"),     // 16 min later: edit-too-late
+    signedResp("editable", R2, 2000, true, "c-r2"),
+    sign(evResponseConfirm({ ...at(3000), formId: "editable", confirmationId: "c-r2", author: C.address })),
+    signedResp("editable", R2, 4000, false, "c-r2"),                 // after the receipt: edit-after-receipt
+    resp("editable", addr(3), 4500),                                  // unsigned: sig-invalid
+    signedResp("editable", R5, 5000, true, "c-r5"),
+    forgedResp("editable", R5, R4, 6000, false),                      // R4 signs an "edit" of R5's answer: sig-invalid
   ];
   const log = []; for (const e of evs) mergeOne(log, e);
   const st = computeState(log, { identity: C.address });
   const openC = (hex) => { try { return JSON.parse(eciesOpen(C, hex).toString("utf8")); } catch { return null; } };
   writeFileSync(join(here, "fixtures", "golden-lifecycle.json"), fmt({
-    creator: C.address, privHex: toHex(C.priv), log, state: st, view: creatorView(st, { identity: C.address, open: openC }),
+    creator: C.address, privHex: toHex(C.priv), log, state: st,
+    view: creatorView(st, { identity: C.address, open: openC, verifyResponse: (pseudo) => verifyInner(pseudo.payload) }),
   }));
 }

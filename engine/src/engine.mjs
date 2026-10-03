@@ -52,6 +52,7 @@ export function computeState(mergedLog, opts = {}) {
   const alts = {}; // formId → { creator → FormView } for contending publishes (id squatting)
   const closeHlcBy = {}; // "formId|creator" → close hlc (per contender)
   const spansBy = {}; // "formId|creator" -> [{from, to|null}] closed periods (close..reopen)
+  const receiptHlcBy = {}; // "formId|creator" -> {confirmationId: hlc of the first receipt} (answer-edit lock)
 
   const forms = {}; // formId → FormView (inserted in HLC publish order)
   const formHlc = new Map(); // formId → publish event hlc (feed ordering)
@@ -79,6 +80,10 @@ export function computeState(mergedLog, opts = {}) {
           showResponseCount: p.showResponseCount === true,
           thankYou: typeof p.thankYou === "string" ? p.thankYou : "",
           shuffleQuestions: p.shuffleQuestions === true,
+          // answer edits: the same (signed) respondent may replace their answer for
+          // editWindowMinutes after first sending it, until the creator sends a receipt
+          allowEdits: p.allowEdits === true,
+          editWindowMinutes: p.allowEdits === true ? (Number.isInteger(p.editWindowMinutes) && p.editWindowMinutes > 0 ? p.editWindowMinutes : 15) : null,
           status: "open",
           confirmations: [],
         });
@@ -126,7 +131,9 @@ export function computeState(mergedLog, opts = {}) {
         if (e.type === EventType.RESPONSE_CONFIRM) {
           // single receipt, or many in one event ("confirm all")
           const ids = Array.isArray(p.confirmationIds) ? p.confirmationIds : [p.confirmationId];
-          for (const cid of ids) if (typeof cid === "string" && cid && !f.confirmations.includes(cid)) f.confirmations.push(cid);
+          const rk = formId + "|" + f.creator;
+          const rh = receiptHlcBy[rk] || (receiptHlcBy[rk] = {});
+          for (const cid of ids) if (typeof cid === "string" && cid && !f.confirmations.includes(cid)) { f.confirmations.push(cid); rh[cid] = e.hlc; }
           return;
         }
         // Close / re-open: the log is HLC-ordered, so the last one wins. Each closed
@@ -170,6 +177,8 @@ export function computeState(mergedLog, opts = {}) {
       if (ch) closeHlc[formId] = ch; else delete closeHlc[formId];
     }
   }
+  const receiptHlc = {}; // formId -> {confirmationId: receipt hlc} of the creator shown here
+  for (const [formId, f] of Object.entries(forms)) { const r = receiptHlcBy[formId + "|" + f.creator]; if (r && Object.keys(r).length) receiptHlc[formId] = r; }
   const closedSpans = {}; // formId -> closed periods of the creator shown on this device
   for (const [formId, f] of Object.entries(forms)) {
     const sp = spansBy[formId + "|" + f.creator];
@@ -189,6 +198,7 @@ export function computeState(mergedLog, opts = {}) {
     responses, // opaque pool, HLC order (fold-level; creatorView interprets)
     closeHlc, // formId → close event hlc of the CURRENT closed period
     closedSpans, // formId → [{from, to|null}] every closed period (creator-view drops)
+    receiptHlc, // formId → {confirmationId: hlc} first receipt per answer (edit lock)
     creator: null,
     pending: { count: deferred.length, events: deferred.map((e) => ({ id: e.id, type: e.type })) },
     dropped,
@@ -271,8 +281,9 @@ export function creatorView(state, opts) {
     // Close-at date (expiresAt, ms): answers stamped after it don't count.
     if (f.expiresAt != null && Number(blob.hlc?.wall) > Number(f.expiresAt)) { drop(view.dropped, "expired"); continue; }
 
-    // Whitelist + inner signature (original: enforced only when whitelist != none).
-    if (f.whitelist?.type !== "none" && verifyResponse) {
+    // Inner signature: members-only forms, and forms that allow edits (an unsigned
+    // "edit" could overwrite someone else's answer).
+    if ((f.whitelist?.type !== "none" || f.allowEdits) && verifyResponse) {
       const pseudo = {
         v: 1, id: blob.id, type: EventType.RESPONSE_SUBMIT, hlc: blob.hlc, dev: "",
         payload: dec, pub: dec.pub ?? null, sig: dec.signature ?? null,
@@ -288,22 +299,36 @@ export function creatorView(state, opts) {
       drop(view.dropped, "not-whitelisted"); continue;
     }
     let seen = seenRespondent.get(formId);
-    if (!seen) { seen = new Set(); seenRespondent.set(formId, seen); } // BUGFIX: store back
-    if (seen.has(respondent)) { drop(view.dropped, "duplicate-respondent"); continue; }
-    seen.add(respondent);
+    if (!seen) { seen = new Map(); seenRespondent.set(formId, seen); } // BUGFIX: store back
+    const prev = seen.get(respondent);
+    if (prev) {
+      // A later response from the same respondent: an EDIT, if the form allows it, inside
+      // the window after their first answer, and before the creator's receipt for it.
+      if (!f.allowEdits || !prev.entry) { drop(view.dropped, "duplicate-respondent"); continue; }
+      if (Number(blob.hlc?.wall) - prev.firstWall > (f.editWindowMinutes || 15) * 60000) { drop(view.dropped, "edit-too-late"); continue; }
+      const rh = state.receiptHlc?.[formId]?.[prev.cid];
+      if (rh && compareHlc(blob.hlc, rh) >= 0) { drop(view.dropped, "edit-after-receipt"); continue; }
+      Object.assign(prev.entry, { submittedAt: dec.submittedAt ?? null, answers: dec.answers ?? [], signature: dec.signature ?? null, edits: prev.entry.edits + 1 });
+      continue;
+    }
+    const meta = { entry: null, firstWall: Number(blob.hlc?.wall), cid: typeof dec.confirmationId === "string" ? dec.confirmationId : null };
+    seen.set(respondent, meta);
     // Answer cap: the first maxResponses (HLC order - identical on every replica) count.
     if (f.maxResponses && view.responses[formId].length >= f.maxResponses) { drop(view.dropped, "over-limit"); continue; }
 
-    view.responses[formId].push({
+    const entry = {
       respondent,
       submittedAt: dec.submittedAt ?? null,
       answers: dec.answers ?? [],
       signature: dec.signature ?? null,
       // Respondent-chosen random receipt id (sealed, so the public confirmation
-      // can't be linked to an address). null on pre-0.2 responses.
-      confirmationId: typeof dec.confirmationId === "string" ? dec.confirmationId : null,
+      // can't be linked to an address). null on pre-0.2 responses. Edits keep it.
+      confirmationId: meta.cid,
       hlc: blob.hlc,
-    });
+    };
+    if (f.allowEdits) entry.edits = 0;   // only on forms that allow edits (keeps older vectors stable)
+    meta.entry = entry;
+    view.responses[formId].push(entry);
   }
 
   return view;

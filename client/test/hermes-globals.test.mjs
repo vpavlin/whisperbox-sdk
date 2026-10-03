@@ -48,6 +48,15 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   a.lastHousekeep = 0; a.tick(); pump();
   assert.strictEqual(b.snapshot().state.forms[capped].status, "closed", "auto-closed at the cap");
   assert.ok(b.snapshot().state.forms[capped].myConfirmed, "automatic receipt");
+  // answer edits: replace within the window, locked by the receipt
+  const ed = a.createForm({ title: "Edit me", allowEdits: true, questions: [{ id: "q1", type: "boolean", text: "?", required: true }] }).formId; pump();
+  assert.ok(b.submitResponse(ed, [{ questionId: "q1", value: true }]).ok); pump();
+  assert.ok(b.snapshot().state.forms[ed].canEdit);
+  assert.ok(b.submitResponse(ed, [{ questionId: "q1", value: false }]).ok); pump();
+  const er = a.snapshot().creatorView.responses[ed];
+  assert.strictEqual(er.length, 1); assert.strictEqual(er[0].answers[0].value, false); assert.strictEqual(er[0].edits, 1);
+  assert.ok(a.confirmResponse(ed, b.identity.address).ok); pump();
+  assert.ok(!b.snapshot().state.forms[ed].canEdit && !b.submitResponse(ed, [{ questionId: "q1", value: true }]).ok, "locked after the receipt");
   // "new answers": flagged until the creator marks them seen
   const nf = a.createForm({ title: "New?", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId; pump();
   assert.strictEqual(a.snapshot().state.forms[nf].newResponses, 0);

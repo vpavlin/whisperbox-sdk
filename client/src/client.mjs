@@ -11,9 +11,9 @@
 //   catch-up (fp/ids/need) over event keys.
 import { mergeOne, mergeWhisperbox, eventKey } from "../../contract/src/merge.mjs";
 import { Clock } from "../../contract/src/hlc.mjs";
-import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId, formReopenId, formUpdateId, formCoOwnerId, responseConfirmBatchId } from "../../contract/src/events.mjs";
+import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId, formReopenId, formUpdateId, formCoOwnerId, responseConfirmBatchId, responseReplyId } from "../../contract/src/events.mjs";
 import * as C from "../../contract/src/crypto-portable.mjs";
-import { validateAnswers, emptyAnswer as emptyAnswerOf } from "../../contract/src/answers.mjs";
+import { validateAnswers, emptyAnswer as emptyAnswerOf, scoreAnswers } from "../../contract/src/answers.mjs";
 import { computeState, creatorView } from "../../engine/src/engine.mjs";
 import { buildInitial, respond } from "../../../third_party/loam-sync/dist/catchup.js";
 
@@ -36,7 +36,8 @@ function confirmIdOf(r, formId) {
   return typeof r.confirmationId === "string" && r.confirmationId ? r.confirmationId : confirmIdLegacy(formId, r.respondent);
 }
 // Definition fields set on publish and changeable with form.update (same as the core).
-function editableFromDef(def) {
+function editableFromDef(def, sealPub = "") {
+  const quiz = def.quiz && typeof def.quiz === "object" && !Array.isArray(def.quiz) && Object.keys(def.quiz).length ? def.quiz : null;
   return {
     title: typeof def.title === "string" ? def.title : "", description: typeof def.description === "string" ? def.description : "",
     expiresAt: typeof def.expiresAt === "number" ? def.expiresAt : null, questions: Array.isArray(def.questions) ? def.questions : [],
@@ -46,6 +47,8 @@ function editableFromDef(def) {
     ...(typeof def.thankYou === "string" && def.thankYou ? { thankYou: def.thankYou } : {}),
     ...(def.shuffleQuestions === true ? { shuffleQuestions: true } : {}),
     ...(def.anonymous === true ? { anonymous: true } : {}),
+    // quiz: the answer key travels sealed to the form key (only creator + co-owners read it)
+    ...(quiz && sealPub ? { quizKey: C.toHex(C.sealToCreator(null, sealPub, JSON.stringify(quiz))) } : {}),
     ...(def.allowEdits === true ? { allowEdits: true, editWindowMinutes: Number.isInteger(def.editWindowMinutes) && def.editWindowMinutes > 0 ? def.editWindowMinutes : 15 } : {}),
   };
 }
@@ -227,7 +230,7 @@ export class WhisperboxClient {
   }
   // Admission gates (mirror WhisperboxCoreImpl::admitEvent).
   admit(e) {
-    if (e.type === EventType.FORM_PUBLISH || e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.FORM_CLOSE || e.type === EventType.FORM_REOPEN || e.type === EventType.FORM_UPDATE || e.type === EventType.FORM_COOWNER) {
+    if (e.type === EventType.FORM_PUBLISH || e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.FORM_CLOSE || e.type === EventType.FORM_REOPEN || e.type === EventType.FORM_UPDATE || e.type === EventType.FORM_COOWNER || e.type === EventType.RESPONSE_REPLY) {
       if (!C.verifyEvent(e)) { this.diag.admDropSig++; return false; }
       return true;
     }
@@ -331,7 +334,7 @@ export class WhisperboxClient {
       id: formId,
       // Sealing key = this form's OWN key: derived from the identity, or exported from a Keycard.
       creator: this.identity.address, publicKey, createdAt: this.now(),
-      ...editableFromDef(def),
+      ...editableFromDef(def, publicKey),
     };
     const e = this.buildEvent(EventType.FORM_PUBLISH, formPublishId(formId), p, true);
     this.adopt(e);
@@ -346,7 +349,7 @@ export class WhisperboxClient {
     const f = this.state().forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
     if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
-    this.adopt(this.buildEvent(EventType.FORM_UPDATE, formUpdateId(formId, C.randomHex(6)), { formId, author: this.identity.address, form: editableFromDef(def) }, true));
+    this.adopt(this.buildEvent(EventType.FORM_UPDATE, formUpdateId(formId, C.randomHex(6)), { formId, author: this.identity.address, form: editableFromDef(def, f.publicKey) }, true));
     return { ok: true, formId };
   }
   isCoOwner(f) { return f.creator !== this.identity.address && (f.coOwners || []).some((c) => c.address === this.identity.address); }
@@ -460,7 +463,9 @@ export class WhisperboxClient {
     const inner = wl !== "none" || f.allowEdits   // editable forms are signed: nobody can "edit" someone else's answer
       ? { signature: C.signInner(me, resp), pub: me.pubHex }
       : { signature: null, pub: null };
-    const sealed = C.toHex(C.sealToCreator(null, f.publicKey, JSON.stringify({ ...resp, ...inner, confirmationId })));
+    // one-off key for private replies / quiz scores to this answer (re-derivable, unlinkable)
+    const replyPub = C.deriveReplyKey(this.identity, formId, confirmationId).pubHex;
+    const sealed = C.toHex(C.sealToCreator(null, f.publicKey, JSON.stringify({ ...resp, ...inner, confirmationId, replyPub })));
     const e = this.buildEvent(EventType.RESPONSE_SUBMIT, responseSubmitId(sealed), { encryptedPayload: sealed }, false);
     // per-form device tag on the wire: answers to different forms can't be linked by device
     const tag = C.responseDevTag(this.deviceId, formId);
@@ -539,6 +544,82 @@ export class WhisperboxClient {
     this._opened.set(hex, { dec, nKeys: keys.size });
     return dec;
   }
+  quizOf(f, keys) {
+    if (typeof f.quizKey !== "string" || !f.quizKey) return null;
+    this._quiz = this._quiz || new Map();
+    if (this._quiz.has(f.quizKey)) return this._quiz.get(f.quizKey);
+    const k = keys.get(f.publicKey);
+    if (!k) return null;
+    let q = null;
+    try { q = JSON.parse(C.utf8Decode(C.eciesOpen(k, f.quizKey))); } catch { q = null; }
+    if (!q || typeof q !== "object" || Array.isArray(q)) q = null;
+    this._quiz.set(f.quizKey, q);
+    return q;
+  }
+  // Module-layer extras per decrypted answer: receipt sent, private replies sent, quiz score.
+  enrich(st, formId, list, keys) {
+    const f = st.forms[formId]; if (!f) return list;
+    const quiz = this.quizOf(f, keys);
+    const replies = new Map();
+    for (const r of f.replies || []) replies.set(r.to, (replies.get(r.to) || 0) + 1);
+    for (const r of list) {
+      const cid = confirmIdOf(r, formId);
+      r.confirmed = (f.confirmations || []).includes(cid);
+      r.replies = replies.get(cid) || 0;
+      if (quiz) Object.assign(r, scoreAnswers(f.questions, quiz, r.answers));
+    }
+    return list;
+  }
+  sendReply(formId, cid, replyPub, body) {
+    const sealed = C.toHex(C.sealToCreator(null, replyPub, JSON.stringify(body)));
+    this.adopt(this.buildEvent(EventType.RESPONSE_REPLY, responseReplyId(formId, cid, C.randomHex(6)), { formId, author: this.identity.address, to: cid, sealed }, true));
+  }
+  /** Private reply to one answer (creator / co-owner): only that respondent can read it. */
+  replyToResponse(formId, confirmationId, message) {
+    formId = lc(formId);
+    if (!String(message || "").trim()) return { ok: false, error: "write a message first" };
+    const st = this.state(); const f = st.forms[formId];
+    if (!f) return { ok: false, error: "unknown form" };
+    if (f.creator !== this.identity.address && !this.isCoOwner(f)) return { ok: false, error: "not the creator or a co-owner" };
+    const r = (this.decrypt(st).responses[formId] || []).find((x) => confirmIdOf(x, formId) === confirmationId);
+    if (!r || !r.replyPub) return { ok: false, error: "that answer can't receive replies (sent by an older WhisperBox)" };
+    this.sendReply(formId, confirmationId, r.replyPub, { message: String(message).trim(), from: this.identity.address, at: this.now() });
+    return { ok: true };
+  }
+  /** Quiz: send each answer that hasn't had a reply yet its score (privately). */
+  sendScores(formId) {
+    formId = lc(formId);
+    const st = this.state(); const f = st.forms[formId];
+    if (!f) return { ok: false, error: "unknown form" };
+    if (f.creator !== this.identity.address && !this.isCoOwner(f)) return { ok: false, error: "not the creator or a co-owner" };
+    const keys = this.formKeys(st);
+    if (!this.quizOf(f, keys)) return { ok: false, error: "this form isn't a quiz" };
+    const list = this.enrich(st, formId, (this.decrypt(st).responses[formId] || []).map((r) => ({ ...r })), keys);
+    let sent = 0, skipped = 0;
+    for (const r of list) {
+      if (r.replies > 0) continue;
+      if (!r.replyPub) { skipped++; continue; }
+      this.sendReply(formId, confirmIdOf(r, formId), r.replyPub, { kind: "score", score: r.score, outOf: r.outOf, correct: r.correct, from: this.identity.address, at: this.now() });
+      sent++;
+    }
+    return { ok: true, sent, skipped };
+  }
+  myRepliesFor(fid, f) {
+    const cid = this.mySubs[fid];
+    if (!cid || !(f.replies || []).length) return null;
+    this._replies = this._replies || new Map();
+    let rk = null; const out = [];
+    for (const r of f.replies) {
+      if (r.to !== cid) continue;
+      if (!this._replies.has(r.sealed)) {
+        rk = rk || C.deriveReplyKey(this.identity, fid, cid);
+        let b = null; try { b = JSON.parse(C.utf8Decode(C.eciesOpen(rk, r.sealed))); } catch { b = null; }
+        this._replies.set(r.sealed, b && typeof b === "object" && !Array.isArray(b) ? b : null);
+      }
+      const b = this._replies.get(r.sealed); if (b) out.push(b);
+    }
+    return out.length ? out : null;
+  }
   decrypt(st) {
     const keys = this.formKeys(st);
     return creatorView(st, {
@@ -553,10 +634,8 @@ export class WhisperboxClient {
     let cv = null;
     if (st.creator || this.coOwnedIds(st).length) {
       cv = this.decrypt(st);
-      for (const [fid, list] of Object.entries(cv.responses)) {
-        const confs = cv.confirmations[fid] || [];
-        for (const r of list) r.confirmed = confs.includes(confirmIdOf(r, fid));
-      }
+      const keys = this.formKeys(st);
+      for (const [fid, list] of Object.entries(cv.responses)) this.enrich(st, fid, list, keys);
     }
     const missing = new Set(this.formsMissingKeys(st));
     let seenDirty = false, newTotal = 0;
@@ -583,6 +662,8 @@ export class WhisperboxClient {
           return { editUntil: until, canEdit: !confirmedNow && f.status === "open" && this.now() < until };
         })() : {}),
         coOwner: this.isCoOwner(f),
+        ...((mine || this.isCoOwner(f)) && f.quizKey ? (() => { const q = this.quizOf(f, this.formKeys(st)); return q ? { quiz: q } : {}; })() : {}),
+        ...(submitted ? (() => { const r = this.myRepliesFor(fid, f); return r ? { myReplies: r } : {}; })() : {}),
         ...(mine || this.isCoOwner(f) ? (() => {   // "N new" since the creator / co-owner last looked
           const n = (cv?.responses?.[fid] || []).length;
           if (this.seen[fid] === undefined) { this.seen[fid] = n; seenDirty = true; }
@@ -610,10 +691,13 @@ export class WhisperboxClient {
     const val = (q, v) => (Array.isArray(v) ? v.map((x) => opt(q, x)).join("; ") : opt(q, v));
     const iso = (ms) => (ms > 0 ? new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z") : "");
     const qs = f.questions || [];
-    const rows = [["respondent", "submittedAt", "confirmed", ...qs.map((q) => q.text || q.id)]];
+    const quiz = this.quizOf(f, this.formKeys(st));
+    const rows = [["respondent", "submittedAt", "confirmed", ...(quiz ? ["score"] : []), ...qs.map((q) => q.text || q.id)]];
     for (const r of this.decrypt(st).responses[formId] || []) {
       const byQ = new Map((r.answers || []).map((a) => [a.questionId, a.value]));
+      const sc = quiz ? scoreAnswers(qs, quiz, r.answers) : null;
       rows.push([r.respondent, iso(r.submittedAt || 0), (f.confirmations || []).includes(confirmIdOf(r, formId)) ? "yes" : "no",
+        ...(sc ? [`${sc.score}/${sc.outOf}`] : []),
         ...qs.map((q) => (byQ.has(q.id) ? val(q, byQ.get(q.id)) : ""))]);
     }
     return { ok: true, csv: rows.map((r) => r.map((c) => cell(String(c))).join(",")).join("\n") + "\n" };

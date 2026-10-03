@@ -57,6 +57,7 @@ export function editableFields(p) {
     thankYou: typeof p.thankYou === "string" ? p.thankYou : "",
     shuffleQuestions: p.shuffleQuestions === true,
     anonymous: p.anonymous === true,   // respondents answer as a per-form identity
+    quizKey: typeof p.quizKey === "string" && p.quizKey ? p.quizKey : null,   // answer key, sealed to the form key
     // answer edits: the same (signed) respondent may replace their answer for
     // editWindowMinutes after first sending it, until the creator sends a receipt
     allowEdits: p.allowEdits === true,
@@ -94,6 +95,7 @@ export function computeState(mergedLog, opts = {}) {
           createdAt: p.createdAt,
           ...editableFields(p),
           coOwners: [],        // [{address, sealedKey}] - may read answers + send receipts
+          replies: [],         // [{to, sealed, hlc}] private replies (sealed to an answer's reply key)
           version: 1,          // +1 per form.update
           updatedAt: null,     // hlc.wall of the latest update
           status: "open",
@@ -132,16 +134,22 @@ export function computeState(mergedLog, opts = {}) {
       case EventType.FORM_CLOSE:
       case EventType.FORM_REOPEN:
       case EventType.FORM_UPDATE:
-      case EventType.FORM_COOWNER: {
+      case EventType.FORM_COOWNER:
+      case EventType.RESPONSE_REPLY: {
         if (verify && e.sig && !verify(e)) { drop(dropped, "sig-invalid"); return; }
         const formId = lc(p.formId);
         let f = forms[formId];
         if (!f) { deferred.push(e); return; } // lenient: close/confirm may lead publish
-        const coOwnerReceipt = e.type === EventType.RESPONSE_CONFIRM && (f.coOwners || []).some((c) => c.address === lc(p.author));
+        const coOwnerReceipt = (e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.RESPONSE_REPLY) && (f.coOwners || []).some((c) => c.address === lc(p.author));
         if (lc(p.author) !== f.creator && !coOwnerReceipt) {
           const alt = alts[formId] && alts[formId][lc(p.author)];
           if (!alt) { drop(dropped, "not-creator"); return; }
           f = alt; // a contender's own close/confirm applies to its own copy
+        }
+        if (e.type === EventType.RESPONSE_REPLY) {
+          if (typeof p.to !== "string" || !p.to || typeof p.sealed !== "string" || !p.sealed) { drop(dropped, "bad-reply"); return; }
+          if (!f.replies.some((r) => r.sealed === p.sealed)) f.replies.push({ to: p.to, sealed: p.sealed, hlc: e.hlc });
+          return;
         }
         if (e.type === EventType.FORM_COOWNER) {
           const owner = lc(p.owner || "");
@@ -339,6 +347,7 @@ export function creatorView(state, opts) {
       const rh = state.receiptHlc?.[formId]?.[prev.cid];
       if (rh && compareHlc(blob.hlc, rh) >= 0) { drop(view.dropped, "edit-after-receipt"); continue; }
       Object.assign(prev.entry, { submittedAt: dec.submittedAt ?? null, answers: dec.answers ?? [], signature: dec.signature ?? null, edits: prev.entry.edits + 1 });
+      if (typeof dec.replyPub === "string" && /^0[23][0-9a-fA-F]{64}$/.test(dec.replyPub)) prev.entry.replyPub = dec.replyPub.toLowerCase();
       continue;
     }
     const meta = { entry: null, firstWall: Number(blob.hlc?.wall), cid: typeof dec.confirmationId === "string" ? dec.confirmationId : null };
@@ -356,6 +365,7 @@ export function creatorView(state, opts) {
       confirmationId: meta.cid,
       hlc: blob.hlc,
     };
+    if (typeof dec.replyPub === "string" && /^0[23][0-9a-fA-F]{64}$/.test(dec.replyPub)) entry.replyPub = dec.replyPub.toLowerCase();
     if (f.allowEdits) entry.edits = 0;   // only on forms that allow edits (keeps older vectors stable)
     meta.entry = entry;
     view.responses[formId].push(entry);

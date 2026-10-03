@@ -95,6 +95,16 @@ export function deriveAnonIdentity(identity, formId) {
   }
   throw new Error("anonymous identity derivation failed");
 }
+/** One-off key an answer carries (its public half) so the creator can reply privately:
+ *  re-derivable from the identity, so nothing extra has to be stored. */
+export function deriveReplyKey(identity, formId, confirmationId) {
+  const info = String(formId).toLowerCase() + "|" + String(confirmationId);
+  for (let i = 0; i < 8; i++) {
+    const id = identityFromPriv(hkdf(sha256, identity.priv, utf8ToBytes("whisperbox-reply-v1"), utf8ToBytes(i ? info + "#" + i : info), 32));
+    if (id) return id;
+  }
+  throw new Error("reply key derivation failed");
+}
 /** Public "dev" tag on a response event: per form, so answers to different forms can't be
  *  linked by device on the wire. */
 export const responseDevTag = (deviceId, formId) => "wb-" + bytesToHex(sha256(utf8ToBytes(String(deviceId) + "|" + String(formId).toLowerCase()))).slice(0, 12);

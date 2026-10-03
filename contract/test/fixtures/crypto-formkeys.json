@@ -7,7 +7,8 @@
       "pubHex": "03a01bf197a10e586d7c845f75943838a839001143fc3667a3905e61c6864d32bd",
       "keycardPath": "m/43'/60'/1581'/11022128'/1577926826'/1799408082'/489631137'",
       "anonAddress": "0xd36de990825d31e031e6a71b991fe338647596a5",
-      "devTag": "wb-a4acbe736d70"
+      "devTag": "wb-a4acbe736d70",
+      "replyPub": "03a6c828b998dd7b646dad059740a8c40a4b3d6c6996f9e2c0112ebd28d4027927"
     },
     {
       "owner": "alice",
@@ -16,7 +17,8 @@
       "pubHex": "034d329eaf55dfd7cc8694023550d1a7021dafb21ab7e792c016ca3cd844e968c3",
       "keycardPath": "m/43'/60'/1581'/576409789'/1058927117'/262047290'/1603510303'",
       "anonAddress": "0xc797db446be385e6f9043c1eb9bcad37a05fc54f",
-      "devTag": "wb-1a39c79c5110"
+      "devTag": "wb-1a39c79c5110",
+      "replyPub": "036cd52cc4f12e409ab64936cda3c3a957c12c3afe953ae754dec32705e355587f"
     },
     {
       "owner": "alice",
@@ -25,7 +27,8 @@
       "pubHex": "02be47e76577f0bf139d12e8ed1944703e2266064954a846dcafbf4a1b3bbc67e9",
       "keycardPath": "m/43'/60'/1581'/609219903'/962427115'/2043460689'/1526061451'",
       "anonAddress": "0xd065f7830bd0684059810026fd61bd5d9193b04c",
-      "devTag": "wb-f3306d1599e5"
+      "devTag": "wb-f3306d1599e5",
+      "replyPub": "027d7673b4a587e9152ebaa46f4eb5e2bf1bbfe26b07fad63460a4e296c136b036"
     },
     {
       "owner": "alice",
@@ -34,7 +37,8 @@
       "pubHex": "0272501ea3137c88356c740f5b91781644ab66d5015df0005e0c130e427608d356",
       "keycardPath": "m/43'/60'/1581'/1474409785'/1532709854'/1151622121'/1653657370'",
       "anonAddress": "0xbcdfcae757b0ae6ea1c66a627655affa7940be5c",
-      "devTag": "wb-2cf21e852e07"
+      "devTag": "wb-2cf21e852e07",
+      "replyPub": "03eed5602c9107d9e4da7f19ae0c691d2990c9ef3b366d407efdc5c2ef01175d47"
     },
     {
       "owner": "bob",
@@ -43,7 +47,8 @@
       "pubHex": "03cbd86857f346b8fb8932ff213d5c54000b18fc6ffcfc939048d87bbd686b2925",
       "keycardPath": "m/43'/60'/1581'/11022128'/1577926826'/1799408082'/489631137'",
       "anonAddress": "0x949cab1e966416739c2da9f4a27fb3216f305ba4",
-      "devTag": "wb-ac9598efc650"
+      "devTag": "wb-ac9598efc650",
+      "replyPub": "030ca3896de4a0849c93038cf8879f79b85b893eb01e2f1bd4f71d33a4a312a04f"
     },
     {
       "owner": "bob",
@@ -52,7 +57,8 @@
       "pubHex": "03d2b110461f9bd64b90ab498422073229795499aab1e5056ba0aaa9b63005c9c0",
       "keycardPath": "m/43'/60'/1581'/576409789'/1058927117'/262047290'/1603510303'",
       "anonAddress": "0xce43f4ddd83ce2baab8d2f22aeadda742bfead3c",
-      "devTag": "wb-749a55d6bc57"
+      "devTag": "wb-749a55d6bc57",
+      "replyPub": "02155bf84fea58164ae33f724d05152e38ba1dd614d1794cb7c4f7a2aa11e7ebd1"
     },
     {
       "owner": "bob",
@@ -61,7 +67,8 @@
       "pubHex": "02bd8de20bb47437c0af0c911dd85a763a8556419bc68aa850b5529128c950ebce",
       "keycardPath": "m/43'/60'/1581'/609219903'/962427115'/2043460689'/1526061451'",
       "anonAddress": "0xa4adf8c1597d0497b77bc760b3fbc5b6671acd47",
-      "devTag": "wb-03a2b8c5b94c"
+      "devTag": "wb-03a2b8c5b94c",
+      "replyPub": "023eddc152877b6d0d2117fd376cf50ee6aa35f1d38a776983b85c6f6c0289f0bf"
     },
     {
       "owner": "bob",
@@ -70,7 +77,8 @@
       "pubHex": "02301e4e41aa9438ce5e428ae97a18f8858da6b942c10eebb4c75e71cd3ffe058d",
       "keycardPath": "m/43'/60'/1581'/1474409785'/1532709854'/1151622121'/1653657370'",
       "anonAddress": "0xc03661b66369134a67d5450838250635d2383cc3",
-      "devTag": "wb-36ce98abe655"
+      "devTag": "wb-36ce98abe655",
+      "replyPub": "034a5595f7183d258b561717d71d67478a9bd93fa40424059094c02cd8f2152e61"
     },
     {
       "owner": "carol",
@@ -79,7 +87,8 @@
       "pubHex": "03662fd64956ad6ec4504c4ebd2482fffc5681a505082afd76b6d1873af48cd41d",
       "keycardPath": "m/43'/60'/1581'/11022128'/1577926826'/1799408082'/489631137'",
       "anonAddress": "0xe6963b4fd6db490497fdd4f71763c55ff226c770",
-      "devTag": "wb-4d0121cec0d3"
+      "devTag": "wb-4d0121cec0d3",
+      "replyPub": "022aef2189d09a51cc3d6806c6a62016c6c59a709584c3a51a9b4cd61b5cd758f2"
     },
     {
       "owner": "carol",
@@ -88,7 +97,8 @@
       "pubHex": "0210a97ce4dce0e91836a732c0d01ce158be95caf9d2dde0ab411e7ca3a8e86b8c",
       "keycardPath": "m/43'/60'/1581'/576409789'/1058927117'/262047290'/1603510303'",
       "anonAddress": "0x009975f778a7ab63665d6b550dc13c900a34e48e",
-      "devTag": "wb-4b70d9a7fde6"
+      "devTag": "wb-4b70d9a7fde6",
+      "replyPub": "029baa0dabbe1509936eacf7d1065d17aa91e6eb7915502158cbc609742726192b"
     },
     {
       "owner": "carol",
@@ -97,7 +107,8 @@
       "pubHex": "027aec355b4e6483c62deb89ce608211a766a98234899b113ef02aadb3dfef2aca",
       "keycardPath": "m/43'/60'/1581'/609219903'/962427115'/2043460689'/1526061451'",
       "anonAddress": "0x6b49d13d2349726d7b129171040a319bda4e2776",
-      "devTag": "wb-213ff423a03b"
+      "devTag": "wb-213ff423a03b",
+      "replyPub": "035cc7d25287c19e64fe67cafd52ffb4454eeeecc583b2eea9b4a1275e00003873"
     },
     {
       "owner": "carol",
@@ -106,7 +117,8 @@
       "pubHex": "028a884646075d2e9d21059b17663ba1f9a6b3922e3b191dcdf0c84456334f1920",
       "keycardPath": "m/43'/60'/1581'/1474409785'/1532709854'/1151622121'/1653657370'",
       "anonAddress": "0x50a8518b9366d43a831492f9a6cc21e27fba1e88",
-      "devTag": "wb-ce6a06b35738"
+      "devTag": "wb-ce6a06b35738",
+      "replyPub": "021809cd95ee0160ca11f62b3591a33f7d063f92bd329cdd98df21ebe9d2405c4c"
     }
   ],
   "formSeal": {

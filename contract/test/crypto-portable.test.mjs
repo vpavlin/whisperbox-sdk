@@ -87,6 +87,7 @@ test("per-form keys: portable == node reference == golden; sealed-to-form opens 
     assert.strictEqual(P.deriveAnonIdentity(byName[k.owner], k.formId).address, k.anonAddress, "anonymous identity (portable == node)");
     assert.notStrictEqual(k.anonAddress, byName[k.owner].address, "anonymous address != real address");
     assert.strictEqual(P.responseDevTag("wb-dev-" + k.owner, k.formId), k.devTag);
+    assert.strictEqual(P.deriveReplyKey(byName[k.owner], k.formId, "c-" + k.owner).pubHex, k.replyPub, "reply key (portable == node)");
     assert.notStrictEqual(d.pubHex, byName[k.owner].pubHex, "form key != identity key");
     assert.match(k.keycardPath, /^m\/43'\/60'\/1581'(\/\d+'){4}$/, "EIP-1581 subtree, 4 hardened indices");
   }
@@ -115,4 +116,11 @@ test("answer validation: every case in the shared fixture (C++ parity_test reads
   const { validateAnswer } = await import("../src/answers.mjs");
   const doc = JSON.parse(readFileSync(join(fx, "answer-validation.json"), "utf8"));
   for (const c of doc.cases) assert.strictEqual(validateAnswer(c.q, c.v) === "", c.ok, `${JSON.stringify(c.q)} <- ${JSON.stringify(c.v)}: "${validateAnswer(c.q, c.v)}"`);
+});
+
+test("quiz scoring: every case in the shared fixture (C++ parity_test reads the same file)", async () => {
+  const { scoreAnswer, scoreAnswers } = await import("../src/answers.mjs");
+  const doc = JSON.parse(readFileSync(join(fx, "answer-validation.json"), "utf8"));
+  for (const c of doc.scoring) assert.strictEqual(scoreAnswer(c.q, c.key, c.v), c.r, `${JSON.stringify(c.q)} key ${JSON.stringify(c.key)} <- ${JSON.stringify(c.v)}`);
+  for (const t of doc.scoringTotals) assert.deepStrictEqual(scoreAnswers(t.questions, t.key, t.answers), t.result);
 });

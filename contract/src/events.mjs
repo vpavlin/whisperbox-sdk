@@ -38,6 +38,7 @@ export const EventType = Object.freeze({
   FORM_REOPEN: "form.reopen",   // 0.3.2+: creator re-opens a closed form
   FORM_UPDATE: "form.update",   // 0.3.6+: creator edits a published form (latest wins)
   FORM_COOWNER: "form.coowner", // 0.3.8+: creator shares the form's key with a co-owner
+  RESPONSE_REPLY: "response.reply", // 0.3.9+: private reply to one answer (sealed to its reply key)
 });
 
 // Events only the form's creator may author (gated). Gating: payload.author ==
@@ -48,6 +49,7 @@ export const CREATOR_GATED = new Set([
   EventType.FORM_REOPEN,
   EventType.FORM_UPDATE,
   EventType.FORM_COOWNER,
+  EventType.RESPONSE_REPLY,
 ]);
 
 // Open events: any participant may author; no event-level signature allowed.
@@ -71,6 +73,7 @@ export const formCloseId = (formId, nonce) => (nonce ? `close:${lc(formId)}:${no
 export const formReopenId = (formId, nonce) => `reopen:${lc(formId)}:${nonce}`;
 export const formUpdateId = (formId, nonce) => `update:${lc(formId)}:${nonce}`;
 export const formCoOwnerId = (formId, owner) => `coowner:${lc(formId)}:${lc(owner)}`;
+export const responseReplyId = (formId, to, nonce) => `reply:${lc(formId)}:${to}:${nonce}`;
 /** One receipt event for many responses ("confirm all"): content-addressed by the ids. */
 export const responseConfirmBatchId = (formId, confirmationIds) =>
   `confirm:${lc(formId)}:b:${bytesToHex(sha256(utf8ToBytes([...confirmationIds].sort().join(",")))).slice(0, 16)}`;
@@ -182,5 +185,18 @@ export function evFormCoOwner({ hlc, dev, formId, author, owner, sealedKey }) {
     hlc,
     dev,
     payload: { formId: lc(formId), author: lc(author), owner: lc(owner), sealedKey },
+  };
+}
+
+/** Private reply to one answer (creator or co-owner): `to` = the answer's receipt id,
+ *  `sealed` = ECIES(the answer's one-off reply key, JSON {message, score?, outOf?}). */
+export function evResponseReply({ hlc, dev, formId, author, to, sealed, nonce }) {
+  return {
+    v: 1,
+    id: responseReplyId(formId, to, nonce),
+    type: EventType.RESPONSE_REPLY,
+    hlc,
+    dev,
+    payload: { formId: lc(formId), author: lc(author), to, sealed },
   };
 }

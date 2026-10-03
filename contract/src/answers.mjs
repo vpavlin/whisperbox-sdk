@@ -86,3 +86,52 @@ export function validateAnswers(questions, answers) {
   }
   return null;
 }
+
+// ── Quiz scoring ────────────────────────────────────────────────────────────────
+// The answer key is {questionId: {answer, points?}} (sealed to the form key on the wire):
+//   radioButtons, dropdown, scale   answer = the right option index / value
+//   boolean                         answer = true | false
+//   number, date, time              answer = the exact value
+//   checkbox                        answer = [index...] - exactly that set (an "other" never counts)
+//   text, textarea, email, url      answer = [accepted strings] - trimmed, case-insensitive
+// Other types aren't scored. points defaults to 1.
+const normText = (x) => String(x).trim().toLowerCase().replace(/\s+/g, " ");
+/** true / false, or null when the question isn't scored. */
+export function scoreAnswer(q, key, v) {
+  if (!key || typeof key !== "object" || !("answer" in key)) return null;
+  const t = String(q?.type ?? "text"), a = key.answer;
+  switch (t) {
+    case "radioButtons": case "dropdown": case "scale": case "number":
+      return typeof a === "number" && v === a;
+    case "boolean":
+      return typeof a === "boolean" && v === a;
+    case "date": case "time":
+      return typeof a === "string" && v === a;
+    case "checkbox": {
+      if (!Array.isArray(a) || !Array.isArray(v)) return false;
+      const want = [...new Set(a.filter(isInt))].sort((x, y) => x - y);
+      const got = [...new Set(v.filter(isInt))].sort((x, y) => x - y);
+      return v.every(isInt) && want.length === got.length && want.every((x, i) => x === got[i]);
+    }
+    case "text": case "textarea": case "email": case "url":
+      return Array.isArray(a) && typeof v === "string" && v.trim() !== "" && a.some((x) => typeof x === "string" && normText(x) === normText(v));
+    default:
+      return null;
+  }
+}
+const pointsOf = (key) => (typeof key?.points === "number" && Number.isFinite(key.points) && key.points >= 0 ? key.points : 1);
+/** {score, outOf, correct: {questionId: bool}} over the scored questions. */
+export function scoreAnswers(questions, answerKey, answers) {
+  const byQ = new Map((Array.isArray(answers) ? answers : []).filter((a) => a && typeof a === "object").map((a) => [a.questionId, a.value]));
+  let score = 0, outOf = 0;
+  const correct = {};
+  for (const q of Array.isArray(questions) ? questions : []) {
+    const key = answerKey && typeof answerKey === "object" ? answerKey[q.id] : null;
+    const r = scoreAnswer(q, key, byQ.has(q.id) ? byQ.get(q.id) : null);
+    if (r === null) continue;
+    outOf += pointsOf(key);
+    if (r) score += pointsOf(key);
+    correct[q.id] = r;
+  }
+  return { score, outOf, correct };
+}

@@ -699,6 +699,77 @@
     },
     {
       "v": 1,
+      "id": "resp:ab051e1d8816c8df8a92f6a2e8526f207f32284fe434656d95a782cbe987da5b",
+      "type": "response.submit",
+      "hlc": {
+        "wall": 9400,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "encryptedPayload": "0103b19cc19fa20d9c0783d6fd16f8aab7f04dbab502c510edf4b362dce042bb0a7eca44ac363e602938adcf1a8ae5ea2791fd713f30efd2415cbef29c071b3431f100833333a4136bf71787dfeedc7e1d069bd80c709f15d4cd9e3781427c5b1a247efd42cf7f16c3509d4d4d427bf3ab5081fd397f770395057c78fcbe7b3ae60f8e8cc45195c1331a827849ba937aed1ab85a6715dd3cace5780e99d050cd6707ee1cd7c3fe36bcb6b2d4d13f4d9f953349d6d1b7e6df72bf438a527ce3ea99216b05af02909c64a1b6cdb96ae46d83bda59c2aa468f18159d25b33e4cdc42c1e52b8fd7f651371f309f5b7e7c66cc1aa1ad1c58dcb7a84ace57f0192f0fbb486470556c7e963555d28e576d53d251c9619e1211b783848eec952f2f91e33ec5375bb34d4f2ea9a9eabe54c3c855a381ecebc3a3e46aba347a165078a08466c8633b2d96ea6cc943c0a1579cb83860abe"
+      }
+    },
+    {
+      "v": 1,
+      "id": "reply:shared:c-reply:r1",
+      "type": "response.reply",
+      "hlc": {
+        "wall": 9500,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "formId": "shared",
+        "author": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
+        "to": "c-reply",
+        "sealed": "01cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+      },
+      "pub": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
+      "sig": "042aec76c19c64ee52ad51daeb729d6a06cc599486cc9a00d003ad41628bfeac1f49ad58b7588bcf76be4d334ffeb9d9f4c9d7c28a0ceb9a003fce85aa8c37fb"
+    },
+    {
+      "v": 1,
+      "id": "reply:shared:c-reply:r2",
+      "type": "response.reply",
+      "hlc": {
+        "wall": 9600,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "formId": "shared",
+        "author": "0x71eee9485269aba601176f7b22fbbef890d1ddc9",
+        "to": "c-reply",
+        "sealed": "01efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+      },
+      "pub": "033a659c4287ad5791ae2fd94b9441e523cd49ff878de0d18b8a3d1427c55b1543",
+      "sig": "41414913b17233d3e0719f91ef101d213cf2b648373cd65588d13af7ab365fc438ed4193aeb1168714f9d5ad61c212417a1edcaacccc759286aed023b0b9bf5d"
+    },
+    {
+      "v": 1,
+      "id": "reply:shared:c-reply:r3",
+      "type": "response.reply",
+      "hlc": {
+        "wall": 9700,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "formId": "shared",
+        "author": "0x98db005309e1115198ef4a99294dd6829a7a5607",
+        "to": "c-reply",
+        "sealed": "01aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "pub": "022ae498c33d952545fdd6d4dd6d8ddcaf8a5f8ccd28f306b33b18e4131f142824",
+      "sig": "e3f1665aab47e6303f88a4052867baf30ba2dd2e1e5646571f218171a261e85526524c49464b3605b5b873d56ef10fdad5c934bb6ba69f1ad9a1685d4e43cd55"
+    },
+    {
+      "v": 1,
       "id": "resp:0e6ce07091ec426fcfdb5b437d94f29429e02adf4a9a20836d02c686e4d2ad09",
       "type": "response.submit",
       "hlc": {
@@ -754,9 +825,11 @@
         "thankYou": "",
         "shuffleQuestions": false,
         "anonymous": false,
+        "quizKey": null,
         "allowEdits": false,
         "editWindowMinutes": null,
         "coOwners": [],
+        "replies": [],
         "version": 1,
         "updatedAt": null,
         "status": "open",
@@ -789,9 +862,11 @@
         "thankYou": "",
         "shuffleQuestions": false,
         "anonymous": false,
+        "quizKey": null,
         "allowEdits": false,
         "editWindowMinutes": null,
         "coOwners": [],
+        "replies": [],
         "version": 1,
         "updatedAt": null,
         "status": "open",
@@ -822,9 +897,11 @@
         "thankYou": "",
         "shuffleQuestions": false,
         "anonymous": false,
+        "quizKey": null,
         "allowEdits": true,
         "editWindowMinutes": 15,
         "coOwners": [],
+        "replies": [],
         "version": 1,
         "updatedAt": null,
         "status": "open",
@@ -865,9 +942,11 @@
         "thankYou": "thanks!",
         "shuffleQuestions": false,
         "anonymous": false,
+        "quizKey": null,
         "allowEdits": false,
         "editWindowMinutes": null,
         "coOwners": [],
+        "replies": [],
         "version": 3,
         "updatedAt": 8000,
         "status": "open",
@@ -898,9 +977,11 @@
         "thankYou": "",
         "shuffleQuestions": false,
         "anonymous": false,
+        "quizKey": null,
         "allowEdits": false,
         "editWindowMinutes": null,
         "coOwners": [],
+        "replies": [],
         "version": 1,
         "updatedAt": null,
         "status": "closed",
@@ -934,12 +1015,33 @@
         "thankYou": "",
         "shuffleQuestions": false,
         "anonymous": false,
+        "quizKey": null,
         "allowEdits": false,
         "editWindowMinutes": null,
         "coOwners": [
           {
             "address": "0x71eee9485269aba601176f7b22fbbef890d1ddc9",
             "sealedKey": "01abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+          }
+        ],
+        "replies": [
+          {
+            "to": "c-reply",
+            "sealed": "01cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            "hlc": {
+              "wall": 9500,
+              "ctr": 0,
+              "dev": "d"
+            }
+          },
+          {
+            "to": "c-reply",
+            "sealed": "01efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef",
+            "hlc": {
+              "wall": 9600,
+              "ctr": 0,
+              "dev": "d"
+            }
           }
         ],
         "version": 1,
@@ -1103,6 +1205,15 @@
         "encryptedPayload": "0103b4b086b397eda6e47092f757d45ea7061c19f0a86af9bc469452a539b955e4204f6812d70068249d4fce4dbccbfa9cb12742a3a755f1f5f8f54eadc4cbb96cf761ba09d3b0f7ee9703bd4aaac1b72b70b9b482254d0e8453a8e14f82a391911029b964bef3041fca94fbe34ad1bd1c5c382d2efea4ceea61f0a73fe2779306bfd10ad986ead1c29c893efb2bc33c7f3e343f89ea7daf45a1678c27bb215cb695c14de316fcfaeda768b2dabdedc1a3c1b24bf36ece459b9192059adcc2dd0d89b3f047734ebad83a37e27e003adae81b25d765a9765ce269ab38ac0e07635a3ef1941962c18552d3411f5e2d7323a95b11af5461d047b80c6f4f9053f1afdb76ae8aa05d1d43"
       },
       {
+        "id": "resp:ab051e1d8816c8df8a92f6a2e8526f207f32284fe434656d95a782cbe987da5b",
+        "hlc": {
+          "wall": 9400,
+          "ctr": 0,
+          "dev": "d"
+        },
+        "encryptedPayload": "0103b19cc19fa20d9c0783d6fd16f8aab7f04dbab502c510edf4b362dce042bb0a7eca44ac363e602938adcf1a8ae5ea2791fd713f30efd2415cbef29c071b3431f100833333a4136bf71787dfeedc7e1d069bd80c709f15d4cd9e3781427c5b1a247efd42cf7f16c3509d4d4d427bf3ab5081fd397f770395057c78fcbe7b3ae60f8e8cc45195c1331a827849ba937aed1ab85a6715dd3cace5780e99d050cd6707ee1cd7c3fe36bcb6b2d4d13f4d9f953349d6d1b7e6df72bf438a527ce3ea99216b05af02909c64a1b6cdb96ae46d83bda59c2aa468f18159d25b33e4cdc42c1e52b8fd7f651371f309f5b7e7c66cc1aa1ad1c58dcb7a84ace57f0192f0fbb486470556c7e963555d28e576d53d251c9619e1211b783848eec952f2f91e33ec5375bb34d4f2ea9a9eabe54c3c855a381ecebc3a3e46aba347a165078a08466c8633b2d96ea6cc943c0a1579cb83860abe"
+      },
+      {
         "id": "resp:0e6ce07091ec426fcfdb5b437d94f29429e02adf4a9a20836d02c686e4d2ad09",
         "hlc": {
           "wall": 61000,
@@ -1203,9 +1314,9 @@
       "events": []
     },
     "dropped": {
-      "count": 2,
+      "count": 3,
       "reasons": {
-        "not-creator": 2
+        "not-creator": 3
       }
     }
   },
@@ -1385,6 +1496,24 @@
             "ctr": 0,
             "dev": "d"
           }
+        },
+        {
+          "respondent": "0x0000000000000000000000000000000000000012",
+          "submittedAt": 9400,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": null,
+          "confirmationId": "c-reply",
+          "hlc": {
+            "wall": 9400,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "replyPub": "031a754bf93103d1ba6d65e5624a56605131c4715c392ba773d9404f750e14acf9"
         }
       ]
     },
@@ -1442,6 +1571,24 @@
             "ctr": 0,
             "dev": "d"
           }
+        },
+        {
+          "respondent": "0x0000000000000000000000000000000000000012",
+          "submittedAt": 9400,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": null,
+          "confirmationId": "c-reply",
+          "hlc": {
+            "wall": 9400,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "replyPub": "031a754bf93103d1ba6d65e5624a56605131c4715c392ba773d9404f750e14acf9"
         }
       ]
     },

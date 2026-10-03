@@ -130,7 +130,25 @@ for (const layers of [1, 0]) {
       assert.ok(phone.addCoOwner(fQ, (await b.call("snapshot")).identity.pubHex).ok);
       assert.ok(await until(b, async () => ((await b.call("getDecryptedResponses", [fQ])).responses || []).length === 1), "desktop opens the JS-sealed form key as co-owner");
 
-      // 9. share links are identical on both sides
+      // 9. quiz + private replies across implementations (keys + sealing in both directions)
+      const qq = [{ id: "q1", type: "boolean", text: "Sky blue?", required: true }, { id: "q2", type: "text", text: "Capital?" }];
+      const quiz = { q1: { answer: true }, q2: { answer: ["Praha", "Prague"], points: 2 } };
+      const dQ = (await b.call("createForm", [JSON.stringify({ title: "Desk quiz", questions: qq, quiz })])).formId;
+      assert.ok(await until(b, () => !!phone.snapshot().state.forms[dQ]));
+      assert.ok(phone.submitResponse(dQ, [{ questionId: "q1", value: true }, { questionId: "q2", value: " PRAGUE" }]).ok);
+      assert.ok(await until(b, async () => ((await b.call("getDecryptedResponses", [dQ])).responses || [])[0]?.score === 3), "C++ opens its quiz key and scores the phone's answer 3/3");
+      assert.strictEqual((await b.call("sendScores", [dQ])).sent, 1);
+      assert.ok(await until(b, () => phone.snapshot().state.forms[dQ].myReplies?.[0]?.score === 3), "phone opens the C++-sealed score with its reply key");
+      const pQ = phone.createForm({ title: "Phone quiz", questions: qq, quiz }).formId;
+      assert.ok(phone.snapshot().state.forms[pQ].quiz.q2.points === 2, "phone opens its own quiz key");
+      assert.ok(await until(b, async () => !!(await b.call("snapshot")).state.forms[pQ]));
+      assert.ok((await b.call("submitResponse", [pQ, JSON.stringify([{ questionId: "q1", value: false }, { questionId: "q2", value: "praha" }])])).ok);
+      assert.ok(await until(b, () => (phone.snapshot().creatorView?.responses?.[pQ] || [])[0]?.score === 2), "JS scores the desktop's answer 2/3");
+      const cidD = phone.snapshot().creatorView.responses[pQ][0].confirmationId;
+      assert.ok(phone.replyToResponse(pQ, cidD, "Close!").ok);
+      assert.ok(await until(b, async () => ((await b.call("snapshot")).state.forms[pQ].myReplies || [])[0]?.message === "Close!"), "desktop opens the JS-sealed reply");
+
+      // 10. share links are identical on both sides
       assert.strictEqual(phone.shareUri(fA).uri, (await b.call("shareUri", [fA])).uri);
     } finally { b.close(); }
   });

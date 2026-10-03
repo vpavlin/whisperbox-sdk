@@ -1,38 +1,862 @@
-{"cases": [
-  {"q": {"type": "text", "required": true}, "v": "hi", "ok": true},
-  {"q": {"type": "text", "required": true}, "v": "  ", "ok": false},
-  {"q": {"type": "text"}, "v": null, "ok": true},
-  {"q": {"type": "text"}, "v": 5, "ok": false},
-  {"q": {"type": "email"}, "v": "a@b.co", "ok": true},
-  {"q": {"type": "email"}, "v": "nope", "ok": false},
-  {"q": {"type": "url"}, "v": "https://logos.co/x", "ok": true},
-  {"q": {"type": "url"}, "v": "ftp://x", "ok": false},
-  {"q": {"type": "radioButtons", "options": ["a", "b"]}, "v": 1, "ok": true},
-  {"q": {"type": "radioButtons", "options": ["a", "b"]}, "v": 2, "ok": false},
-  {"q": {"type": "radioButtons", "options": ["a", "b"]}, "v": {"other": "c"}, "ok": false},
-  {"q": {"type": "radioButtons", "options": ["a", "b"], "allowOther": true}, "v": {"other": "c"}, "ok": true},
-  {"q": {"type": "radioButtons", "options": ["a"], "allowOther": true, "required": true}, "v": {"other": " "}, "ok": false},
-  {"q": {"type": "dropdown", "options": ["a", "b", "c"]}, "v": 2, "ok": true},
-  {"q": {"type": "dropdown", "options": ["a", "b", "c"]}, "v": 1.5, "ok": false},
-  {"q": {"type": "checkbox", "options": ["a", "b"]}, "v": [0, 1], "ok": true},
-  {"q": {"type": "checkbox", "options": ["a", "b"]}, "v": [0, 0], "ok": false},
-  {"q": {"type": "checkbox", "options": ["a", "b"], "allowOther": true}, "v": [1, {"other": "z"}], "ok": true},
-  {"q": {"type": "checkbox", "options": ["a", "b"], "allowOther": true}, "v": [{"other": "y"}, {"other": "z"}], "ok": false},
-  {"q": {"type": "checkbox", "options": ["a"], "required": true}, "v": [], "ok": false},
-  {"q": {"type": "boolean", "required": true}, "v": false, "ok": true},
-  {"q": {"type": "boolean"}, "v": "yes", "ok": false},
-  {"q": {"type": "scale"}, "v": 5, "ok": true},
-  {"q": {"type": "scale"}, "v": 6, "ok": false},
-  {"q": {"type": "scale", "min": 0, "max": 10}, "v": 0, "ok": true},
-  {"q": {"type": "scale", "min": 0, "max": 10}, "v": 7.5, "ok": false},
-  {"q": {"type": "number", "min": 1, "max": 99}, "v": 42.5, "ok": true},
-  {"q": {"type": "number", "min": 1, "max": 99}, "v": 0, "ok": false},
-  {"q": {"type": "number"}, "v": "12", "ok": false},
-  {"q": {"type": "date"}, "v": "2026-02-28", "ok": true},
-  {"q": {"type": "date"}, "v": "2026-02-30", "ok": false},
-  {"q": {"type": "date"}, "v": "2024-02-29", "ok": true},
-  {"q": {"type": "time"}, "v": "23:59", "ok": true},
-  {"q": {"type": "time"}, "v": "24:00", "ok": false},
-  {"q": {"type": "section", "required": true}, "v": null, "ok": true},
-  {"q": {"type": "futuretype"}, "v": "anything", "ok": true}
-]}
+{
+  "cases": [
+    {
+      "q": {
+        "type": "text",
+        "required": true
+      },
+      "v": "hi",
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "text",
+        "required": true
+      },
+      "v": "  ",
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "text"
+      },
+      "v": null,
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "text"
+      },
+      "v": 5,
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "email"
+      },
+      "v": "a@b.co",
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "email"
+      },
+      "v": "nope",
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "url"
+      },
+      "v": "https://logos.co/x",
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "url"
+      },
+      "v": "ftp://x",
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "radioButtons",
+        "options": [
+          "a",
+          "b"
+        ]
+      },
+      "v": 1,
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "radioButtons",
+        "options": [
+          "a",
+          "b"
+        ]
+      },
+      "v": 2,
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "radioButtons",
+        "options": [
+          "a",
+          "b"
+        ]
+      },
+      "v": {
+        "other": "c"
+      },
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "radioButtons",
+        "options": [
+          "a",
+          "b"
+        ],
+        "allowOther": true
+      },
+      "v": {
+        "other": "c"
+      },
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "radioButtons",
+        "options": [
+          "a"
+        ],
+        "allowOther": true,
+        "required": true
+      },
+      "v": {
+        "other": " "
+      },
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "dropdown",
+        "options": [
+          "a",
+          "b",
+          "c"
+        ]
+      },
+      "v": 2,
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "dropdown",
+        "options": [
+          "a",
+          "b",
+          "c"
+        ]
+      },
+      "v": 1.5,
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "checkbox",
+        "options": [
+          "a",
+          "b"
+        ]
+      },
+      "v": [
+        0,
+        1
+      ],
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "checkbox",
+        "options": [
+          "a",
+          "b"
+        ]
+      },
+      "v": [
+        0,
+        0
+      ],
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "checkbox",
+        "options": [
+          "a",
+          "b"
+        ],
+        "allowOther": true
+      },
+      "v": [
+        1,
+        {
+          "other": "z"
+        }
+      ],
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "checkbox",
+        "options": [
+          "a",
+          "b"
+        ],
+        "allowOther": true
+      },
+      "v": [
+        {
+          "other": "y"
+        },
+        {
+          "other": "z"
+        }
+      ],
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "checkbox",
+        "options": [
+          "a"
+        ],
+        "required": true
+      },
+      "v": [],
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "boolean",
+        "required": true
+      },
+      "v": false,
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "boolean"
+      },
+      "v": "yes",
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "scale"
+      },
+      "v": 5,
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "scale"
+      },
+      "v": 6,
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "scale",
+        "min": 0,
+        "max": 10
+      },
+      "v": 0,
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "scale",
+        "min": 0,
+        "max": 10
+      },
+      "v": 7.5,
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "number",
+        "min": 1,
+        "max": 99
+      },
+      "v": 42.5,
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "number",
+        "min": 1,
+        "max": 99
+      },
+      "v": 0,
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "number"
+      },
+      "v": "12",
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "date"
+      },
+      "v": "2026-02-28",
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "date"
+      },
+      "v": "2026-02-30",
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "date"
+      },
+      "v": "2024-02-29",
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "time"
+      },
+      "v": "23:59",
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "time"
+      },
+      "v": "24:00",
+      "ok": false
+    },
+    {
+      "q": {
+        "type": "section",
+        "required": true
+      },
+      "v": null,
+      "ok": true
+    },
+    {
+      "q": {
+        "type": "futuretype"
+      },
+      "v": "anything",
+      "ok": true
+    }
+  ],
+  "scoring": [
+    {
+      "q": {
+        "id": "q",
+        "type": "radioButtons",
+        "options": [
+          "a",
+          "b"
+        ]
+      },
+      "key": {
+        "answer": 1
+      },
+      "v": 1,
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "radioButtons",
+        "options": [
+          "a",
+          "b"
+        ]
+      },
+      "key": {
+        "answer": 1
+      },
+      "v": 0,
+      "r": false
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "radioButtons",
+        "options": [
+          "a",
+          "b"
+        ],
+        "allowOther": true
+      },
+      "key": {
+        "answer": 1
+      },
+      "v": {
+        "other": "b"
+      },
+      "r": false
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "dropdown",
+        "options": [
+          "a",
+          "b"
+        ]
+      },
+      "key": {
+        "answer": 0
+      },
+      "v": null,
+      "r": false
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "boolean"
+      },
+      "key": {
+        "answer": false
+      },
+      "v": false,
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "boolean"
+      },
+      "key": {
+        "answer": false
+      },
+      "v": true,
+      "r": false
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "scale"
+      },
+      "key": {
+        "answer": 4
+      },
+      "v": 4,
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "number"
+      },
+      "key": {
+        "answer": 2.5
+      },
+      "v": 2.5,
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "number"
+      },
+      "key": {
+        "answer": 3
+      },
+      "v": 3.0,
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "number"
+      },
+      "key": {
+        "answer": 3
+      },
+      "v": "3",
+      "r": false
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "date"
+      },
+      "key": {
+        "answer": "2026-10-03"
+      },
+      "v": "2026-10-03",
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "time"
+      },
+      "key": {
+        "answer": "09:30"
+      },
+      "v": "9:30",
+      "r": false
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "checkbox",
+        "options": [
+          "a",
+          "b",
+          "c"
+        ]
+      },
+      "key": {
+        "answer": [
+          2,
+          0
+        ]
+      },
+      "v": [
+        0,
+        2
+      ],
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "checkbox",
+        "options": [
+          "a",
+          "b",
+          "c"
+        ]
+      },
+      "key": {
+        "answer": [
+          2,
+          0
+        ]
+      },
+      "v": [
+        0
+      ],
+      "r": false
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "checkbox",
+        "options": [
+          "a",
+          "b",
+          "c"
+        ]
+      },
+      "key": {
+        "answer": [
+          2,
+          0
+        ]
+      },
+      "v": [
+        0,
+        1,
+        2
+      ],
+      "r": false
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "checkbox",
+        "options": [
+          "a",
+          "b",
+          "c"
+        ],
+        "allowOther": true
+      },
+      "key": {
+        "answer": [
+          0
+        ]
+      },
+      "v": [
+        0,
+        {
+          "other": "x"
+        }
+      ],
+      "r": false
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "checkbox",
+        "options": [
+          "a",
+          "b"
+        ]
+      },
+      "key": {
+        "answer": []
+      },
+      "v": [],
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "text"
+      },
+      "key": {
+        "answer": [
+          "Paris",
+          "paris, france"
+        ]
+      },
+      "v": "  PARIS ",
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "text"
+      },
+      "key": {
+        "answer": [
+          "Paris",
+          "paris, france"
+        ]
+      },
+      "v": "Paris,  France",
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "text"
+      },
+      "key": {
+        "answer": [
+          "Paris"
+        ]
+      },
+      "v": "Lyon",
+      "r": false
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "text"
+      },
+      "key": {
+        "answer": [
+          ""
+        ]
+      },
+      "v": "",
+      "r": false
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "email"
+      },
+      "key": {
+        "answer": [
+          "a@b.cz"
+        ]
+      },
+      "v": "A@B.cz",
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "textarea"
+      },
+      "key": {
+        "answer": "Paris"
+      },
+      "v": "Paris",
+      "r": false
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "section"
+      },
+      "key": {
+        "answer": 1
+      },
+      "v": null,
+      "r": null
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "text"
+      },
+      "key": null,
+      "v": "x",
+      "r": null
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "text"
+      },
+      "key": {
+        "points": 2
+      },
+      "v": "x",
+      "r": null
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "weird"
+      },
+      "key": {
+        "answer": "x"
+      },
+      "v": "x",
+      "r": null
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "text"
+      },
+      "key": {
+        "answer": [
+          "Žluťoučký kůň"
+        ]
+      },
+      "v": "ŽLUŤOUČKÝ  KŮŇ",
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "text"
+      },
+      "key": {
+        "answer": [
+          "Москва"
+        ]
+      },
+      "v": "МОСКВА",
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "text"
+      },
+      "key": {
+        "answer": [
+          "Ålesund"
+        ]
+      },
+      "v": " ålesund\t",
+      "r": true
+    },
+    {
+      "q": {
+        "id": "q",
+        "type": "text"
+      },
+      "key": {
+        "answer": [
+          "Łódź"
+        ]
+      },
+      "v": "ŁÓDŹ",
+      "r": true
+    }
+  ],
+  "scoringTotals": [
+    {
+      "questions": [
+        {
+          "id": "a",
+          "type": "boolean"
+        },
+        {
+          "id": "b",
+          "type": "radioButtons",
+          "options": [
+            "x",
+            "y"
+          ]
+        },
+        {
+          "id": "c",
+          "type": "text"
+        },
+        {
+          "id": "s",
+          "type": "section"
+        }
+      ],
+      "key": {
+        "a": {
+          "answer": true,
+          "points": 2
+        },
+        "b": {
+          "answer": 1
+        },
+        "c": {
+          "answer": [
+            "ok"
+          ],
+          "points": 0.5
+        }
+      },
+      "answers": [
+        {
+          "questionId": "a",
+          "value": true
+        },
+        {
+          "questionId": "b",
+          "value": 0
+        },
+        {
+          "questionId": "c",
+          "value": "OK"
+        }
+      ],
+      "result": {
+        "score": 2.5,
+        "outOf": 3.5,
+        "correct": {
+          "a": true,
+          "b": false,
+          "c": true
+        }
+      }
+    },
+    {
+      "questions": [
+        {
+          "id": "a",
+          "type": "boolean"
+        }
+      ],
+      "key": {
+        "a": {
+          "answer": true,
+          "points": -3
+        }
+      },
+      "answers": [],
+      "result": {
+        "score": 0,
+        "outOf": 1,
+        "correct": {
+          "a": false
+        }
+      }
+    }
+  ]
+}

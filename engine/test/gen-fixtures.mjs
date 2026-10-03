@@ -10,7 +10,7 @@ import { eciesOpen } from "../../contract/src/crypto.mjs";
 import { computeState, creatorView } from "../src/engine.mjs";
 import { mulberry32, generateWorld, partitionLogs, goldenCreator } from "./_world.mjs";
 import { toHex, identityFromPriv, signEvent, sealToCreator } from "../../contract/src/crypto.mjs";
-import { evFormPublish, evFormClose, evResponseConfirm, evFormReopen, evResponseConfirmBatch, evResponseSubmit, evFormUpdate, evFormCoOwner } from "../../contract/src/events.mjs";
+import { evFormPublish, evFormClose, evResponseConfirm, evFormReopen, evResponseConfirmBatch, evResponseSubmit, evFormUpdate, evFormCoOwner, evResponseReply } from "../../contract/src/events.mjs";
 import { mergeOne } from "../../contract/src/merge.mjs";
 import { signInner, verifyInner } from "../../contract/src/crypto-portable.mjs";
 
@@ -125,6 +125,11 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
     sign(evFormCoOwner({ ...at(9100), formId: "shared", author: C.address, owner: CO.address, sealedKey: "01" + "ab".repeat(70) })),
     { ...evResponseConfirm({ ...at(9200), formId: "shared", confirmationId: "c-shared-9000", author: CO.address }), ...signEvent(CO, evResponseConfirm({ ...at(9200), formId: "shared", confirmationId: "c-shared-9000", author: CO.address })) },
     { ...evFormClose({ ...at(9300), formId: "shared", author: CO.address, nonce: "co" }), ...signEvent(CO, evFormClose({ ...at(9300), formId: "shared", author: CO.address, nonce: "co" })) },
+    // ── private replies: creator + co-owner may reply; anyone else is dropped ──
+    sealResp("shared", { formId: "shared", respondent: addr(12), submittedAt: 9400, answers: [{ questionId: "q1", value: true }], signature: null, pub: null, confirmationId: "c-reply", replyPub: R1.pubHex }, 9400),
+    sign(evResponseReply({ ...at(9500), formId: "shared", author: C.address, to: "c-reply", sealed: "01" + "cd".repeat(70), nonce: "r1" })),
+    { ...evResponseReply({ ...at(9600), formId: "shared", author: CO.address, to: "c-reply", sealed: "01" + "ef".repeat(70), nonce: "r2" }), ...signEvent(CO, evResponseReply({ ...at(9600), formId: "shared", author: CO.address, to: "c-reply", sealed: "01" + "ef".repeat(70), nonce: "r2" })) },
+    { ...evResponseReply({ ...at(9700), formId: "shared", author: R4.address, to: "c-reply", sealed: "01" + "aa".repeat(70), nonce: "r3" }), ...signEvent(R4, evResponseReply({ ...at(9700), formId: "shared", author: R4.address, to: "c-reply", sealed: "01" + "aa".repeat(70), nonce: "r3" })) },
   ];
   const log = []; for (const e of evs) mergeOne(log, e);
   const st = computeState(log, { identity: C.address });

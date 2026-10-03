@@ -122,7 +122,15 @@ for (const layers of [1, 0]) {
       assert.ok(phone.updateForm(fQ, { title: "Phone lifecycle v2", questions: [{ id: "q1", type: "boolean", text: "Ok? (v2)", required: true }] }).ok);
       assert.ok(await until(b, async () => (await b.call("snapshot")).state.forms[fQ].title === "Phone lifecycle v2"), "desktop folds the phone's form.update");
 
-      // 8. share links are identical on both sides
+      // 8. co-owners across implementations: desktop seals its form key to the phone
+      assert.ok((await b.call("addCoOwner", [fL, phone.identity.pubHex])).ok);
+      assert.ok(await until(b, () => phone.snapshot().state.forms[fL]?.coOwner && (phone.snapshot().creatorView?.responses?.[fL] || []).length === 1),
+        "phone opens the C++-sealed form key and reads the answer as co-owner");
+      // ...and the phone seals its key to the desktop
+      assert.ok(phone.addCoOwner(fQ, (await b.call("snapshot")).identity.pubHex).ok);
+      assert.ok(await until(b, async () => ((await b.call("getDecryptedResponses", [fQ])).responses || []).length === 1), "desktop opens the JS-sealed form key as co-owner");
+
+      // 9. share links are identical on both sides
       assert.strictEqual(phone.shareUri(fA).uri, (await b.call("shareUri", [fA])).uri);
     } finally { b.close(); }
   });

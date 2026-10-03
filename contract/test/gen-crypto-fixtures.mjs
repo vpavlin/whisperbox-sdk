@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 
-import { identityFromPriv, signEvent, sealToCreator, toHex, deriveFormKey, keycardFormKeyPath } from "../src/crypto.mjs";
+import { identityFromPriv, signEvent, sealToCreator, toHex, deriveFormKey, keycardFormKeyPath, deriveAnonIdentity, responseDevTag } from "../src/crypto.mjs";
 import { evFormPublish, evResponseConfirm, evFormClose } from "../src/events.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -74,7 +74,9 @@ const formIds = ["form-639a2554", "parity-f1", "FORM-UPPER", "form-žluť"];
 const formKeys = [];
 for (const n of names) for (const formId of formIds) {
   const k = deriveFormKey(ids[n], formId);
-  formKeys.push({ owner: n, formId, privHex: toHex(k.priv), pubHex: k.pubHex, keycardPath: keycardFormKeyPath(formId) });
+  const an = deriveAnonIdentity(ids[n], formId);
+  formKeys.push({ owner: n, formId, privHex: toHex(k.priv), pubHex: k.pubHex, keycardPath: keycardFormKeyPath(formId),
+    anonAddress: an.address, devTag: responseDevTag("wb-dev-" + n, formId) });
 }
 // a sealed blob to a FORM key (not the identity key)
 const fk = deriveFormKey(bob, "parity-f1");

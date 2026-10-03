@@ -84,6 +84,20 @@ export function deriveFormKey(identity, formId) {
   }
   throw new Error("form key derivation failed");
 }
+// Anonymous forms: the respondent answers as an identity derived per form from their
+// own key - one answer per person per form, but no link to their address or across forms.
+const ANON_SALT = utf8ToBytes("whisperbox-anon-v1");
+export function deriveAnonIdentity(identity, formId) {
+  const fid = String(formId).toLowerCase();
+  for (let i = 0; i < 8; i++) {
+    const id = identityFromPriv(hkdf(sha256, identity.priv, ANON_SALT, utf8ToBytes(i ? fid + "#" + i : fid), 32));
+    if (id) return id;
+  }
+  throw new Error("anonymous identity derivation failed");
+}
+/** Public "dev" tag on a response event: per form, so answers to different forms can't be
+ *  linked by device on the wire. */
+export const responseDevTag = (deviceId, formId) => "wb-" + bytesToHex(sha256(utf8ToBytes(String(deviceId) + "|" + String(formId).toLowerCase()))).slice(0, 12);
 export function keycardFormKeyPath(formId) {
   const h = sha256(utf8ToBytes("logos-whisperbox-form:" + String(formId).toLowerCase()));
   const at = (o) => ((h[o] << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3]) & 0x7fffffff;

@@ -10,7 +10,7 @@ import { eciesOpen } from "../../contract/src/crypto.mjs";
 import { computeState, creatorView } from "../src/engine.mjs";
 import { mulberry32, generateWorld, partitionLogs, goldenCreator } from "./_world.mjs";
 import { toHex, identityFromPriv, signEvent, sealToCreator } from "../../contract/src/crypto.mjs";
-import { evFormPublish, evFormClose, evResponseConfirm, evFormReopen, evResponseConfirmBatch, evResponseSubmit, evFormUpdate } from "../../contract/src/events.mjs";
+import { evFormPublish, evFormClose, evResponseConfirm, evFormReopen, evResponseConfirmBatch, evResponseSubmit, evFormUpdate, evFormCoOwner } from "../../contract/src/events.mjs";
 import { mergeOne } from "../../contract/src/merge.mjs";
 import { signInner, verifyInner } from "../../contract/src/crypto-portable.mjs";
 
@@ -75,6 +75,7 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
     return evResponseSubmit({ ...at(wall), encryptedPayload: toHex(sealToCreator(null, C.pubHex, pt, { ephPriv: sh("eph" + fid + wall), deterministic: true })) });
   };
   const addr = (i) => "0x" + String(i).padStart(40, "0");
+  const CO = identityFromPriv(sh("co-owner"));
   const R1 = identityFromPriv(sh("edit-r1")), R2 = identityFromPriv(sh("edit-r2")), R4 = identityFromPriv(sh("edit-r4")), R5 = identityFromPriv(sh("edit-r5"));
   const sealResp = (fid, body, wall) => evResponseSubmit({ ...at(wall), encryptedPayload: toHex(sealToCreator(null, C.pubHex, JSON.stringify(body), { ephPriv: sh("eph" + fid + wall + body.respondent), deterministic: true })) });
   const signedResp = (fid, who, wall, v, cid) => {
@@ -118,6 +119,12 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
     sign(evFormUpdate({ ...at(8000), formId: "edited", author: C.address, nonce: "u2", form: { title: "edited v3", description: "now with Q2",
       questions: [{ id: "q1", type: "boolean", text: "ok? (reworded)", required: true }, { id: "q2", type: "scale", text: "how much?", required: false, min: 0, max: 10 }],
       thankYou: "thanks!" } })),
+    // ── co-owners: may send receipts; may NOT close; their view includes the co-owned form ──
+    form("shared"),
+    resp("shared", addr(11), 9000),
+    sign(evFormCoOwner({ ...at(9100), formId: "shared", author: C.address, owner: CO.address, sealedKey: "01" + "ab".repeat(70) })),
+    { ...evResponseConfirm({ ...at(9200), formId: "shared", confirmationId: "c-shared-9000", author: CO.address }), ...signEvent(CO, evResponseConfirm({ ...at(9200), formId: "shared", confirmationId: "c-shared-9000", author: CO.address })) },
+    { ...evFormClose({ ...at(9300), formId: "shared", author: CO.address, nonce: "co" }), ...signEvent(CO, evFormClose({ ...at(9300), formId: "shared", author: CO.address, nonce: "co" })) },
   ];
   const log = []; for (const e of evs) mergeOne(log, e);
   const st = computeState(log, { identity: C.address });
@@ -125,5 +132,8 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
   writeFileSync(join(here, "fixtures", "golden-lifecycle.json"), fmt({
     creator: C.address, privHex: toHex(C.priv), log, state: st,
     view: creatorView(st, { identity: C.address, open: openC, verifyResponse: (pseudo) => verifyInner(pseudo.payload) }),
+    coOwner: CO.address,
+    // the co-owner's view (it holds the form key - here the creator's, as in this vector)
+    coView: creatorView(computeState(log, { identity: CO.address }), { identity: CO.address, open: openC, verifyResponse: (pseudo) => verifyInner(pseudo.payload), alsoForms: ["shared"] }),
   }));
 }

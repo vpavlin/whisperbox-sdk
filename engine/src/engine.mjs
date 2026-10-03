@@ -56,6 +56,7 @@ export function editableFields(p) {
     showResponseCount: p.showResponseCount === true,
     thankYou: typeof p.thankYou === "string" ? p.thankYou : "",
     shuffleQuestions: p.shuffleQuestions === true,
+    anonymous: p.anonymous === true,   // respondents answer as a per-form identity
     // answer edits: the same (signed) respondent may replace their answer for
     // editWindowMinutes after first sending it, until the creator sends a receipt
     allowEdits: p.allowEdits === true,
@@ -92,6 +93,7 @@ export function computeState(mergedLog, opts = {}) {
           publicKey: p.publicKey,
           createdAt: p.createdAt,
           ...editableFields(p),
+          coOwners: [],        // [{address, sealedKey}] - may read answers + send receipts
           version: 1,          // +1 per form.update
           updatedAt: null,     // hlc.wall of the latest update
           status: "open",
@@ -129,15 +131,23 @@ export function computeState(mergedLog, opts = {}) {
       case EventType.RESPONSE_CONFIRM:
       case EventType.FORM_CLOSE:
       case EventType.FORM_REOPEN:
-      case EventType.FORM_UPDATE: {
+      case EventType.FORM_UPDATE:
+      case EventType.FORM_COOWNER: {
         if (verify && e.sig && !verify(e)) { drop(dropped, "sig-invalid"); return; }
         const formId = lc(p.formId);
         let f = forms[formId];
         if (!f) { deferred.push(e); return; } // lenient: close/confirm may lead publish
-        if (lc(p.author) !== f.creator) {
+        const coOwnerReceipt = e.type === EventType.RESPONSE_CONFIRM && (f.coOwners || []).some((c) => c.address === lc(p.author));
+        if (lc(p.author) !== f.creator && !coOwnerReceipt) {
           const alt = alts[formId] && alts[formId][lc(p.author)];
           if (!alt) { drop(dropped, "not-creator"); return; }
           f = alt; // a contender's own close/confirm applies to its own copy
+        }
+        if (e.type === EventType.FORM_COOWNER) {
+          const owner = lc(p.owner || "");
+          if (!/^0x[0-9a-f]{40}$/.test(owner) || typeof p.sealedKey !== "string" || !p.sealedKey) { drop(dropped, "bad-coowner"); return; }
+          f.coOwners = [...f.coOwners.filter((c) => c.address !== owner), { address: owner, sealedKey: p.sealedKey }];
+          return;
         }
         if (e.type === EventType.FORM_UPDATE) {
           // log is HLC-ordered: the latest update wins; status / receipts / closes stay
@@ -258,7 +268,9 @@ export function creatorView(state, opts) {
   const open = typeof opts.open === "function" ? opts.open : () => null;
   const verifyResponse = typeof opts.verifyResponse === "function" ? opts.verifyResponse : null;
 
-  const mine = Object.values(state.forms).filter((f) => f.creator === identity);
+  // opts.alsoForms: forms this identity co-owns (it holds their key) - same view
+  const also = new Set((opts.alsoForms || []).map(lc));
+  const mine = Object.values(state.forms).filter((f) => f.creator === identity || also.has(f.id));
   const view = {
     address: identity,
     forms: mine.map((f) => f.id),
@@ -283,7 +295,7 @@ export function creatorView(state, opts) {
 
     const formId = lc(dec.formId ?? "");
     const f = state.forms[formId];
-    if (!f || f.creator !== identity) continue; // not mine (can't decrypt anyway)
+    if (!f || (f.creator !== identity && !also.has(formId))) continue; // not mine / not co-owned
 
     // Closed-form drop: blob's HLC after the close event's HLC. Cross-device HLC
     // comparison is approximate (clock skew) — document as best-effort; the

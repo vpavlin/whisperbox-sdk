@@ -57,6 +57,15 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   assert.strictEqual(er.length, 1); assert.strictEqual(er[0].answers[0].value, false); assert.strictEqual(er[0].edits, 1);
   assert.ok(a.confirmResponse(ed, b.identity.address).ok); pump();
   assert.ok(!b.snapshot().state.forms[ed].canEdit && !b.submitResponse(ed, [{ questionId: "q1", value: true }]).ok, "locked after the receipt");
+  // anonymous forms: per-form identity; every answer event carries a per-form device tag
+  const an = a.createForm({ title: "Anon", anonymous: true, questions: [{ id: "q1", type: "boolean", text: "?", required: true }] }).formId; pump();
+  assert.ok(b.submitResponse(an, [{ questionId: "q1", value: true }]).ok);
+  const ev = b.log.filter((e) => e.type === "response.submit").pop();
+  assert.notStrictEqual(ev.dev, b.deviceId, "no real device id on the wire"); assert.strictEqual(ev.hlc.dev, ev.dev);
+  pump();
+  const who = a.snapshot().creatorView.responses[an][0].respondent;
+  const { deriveAnonIdentity } = await import("../../contract/src/crypto-portable.mjs");
+  assert.notStrictEqual(who, b.identity.address); assert.strictEqual(who, deriveAnonIdentity(b.identity, an).address);
   // "new answers": flagged until the creator marks them seen
   const nf = a.createForm({ title: "New?", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId; pump();
   assert.strictEqual(a.snapshot().state.forms[nf].newResponses, 0);

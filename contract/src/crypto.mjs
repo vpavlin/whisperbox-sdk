@@ -173,6 +173,15 @@ export function deriveFormKey(identity, formId) {
   }
   throw new Error("form key derivation failed");
 }
+export function deriveAnonIdentity(identity, formId) {
+  const fid = String(formId).toLowerCase();
+  for (let i = 0; i < 8; i++) {
+    const id = identityFromPriv(hkdf(Buffer.from(identity.priv), Buffer.from("whisperbox-anon-v1"), Buffer.from(i ? fid + "#" + i : fid, "utf8"), 32));
+    if (id) return id;
+  }
+  throw new Error("anonymous identity derivation failed");
+}
+export const responseDevTag = (deviceId, formId) => "wb-" + createHash("sha256").update(String(deviceId) + "|" + String(formId).toLowerCase()).digest("hex").slice(0, 12);
 export function keycardFormKeyPath(formId) {
   const h = createHash("sha256").update("logos-whisperbox-form:" + String(formId).toLowerCase()).digest();
   const at = (o) => h.readUInt32BE(o) & 0x7fffffff;

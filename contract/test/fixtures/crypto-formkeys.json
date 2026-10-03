@@ -5,84 +5,108 @@
       "formId": "form-639a2554",
       "privHex": "04a3dc1f1fc0594c7792116ead5d5fa5a2cad104d0218d2c07443b0533c3efca",
       "pubHex": "03a01bf197a10e586d7c845f75943838a839001143fc3667a3905e61c6864d32bd",
-      "keycardPath": "m/43'/60'/1581'/11022128'/1577926826'/1799408082'/489631137'"
+      "keycardPath": "m/43'/60'/1581'/11022128'/1577926826'/1799408082'/489631137'",
+      "anonAddress": "0xd36de990825d31e031e6a71b991fe338647596a5",
+      "devTag": "wb-a4acbe736d70"
     },
     {
       "owner": "alice",
       "formId": "parity-f1",
       "privHex": "df0a2053ed6a9f5e36a28b2a11d904bf09120960901498e5ae3ea75eecc1508f",
       "pubHex": "034d329eaf55dfd7cc8694023550d1a7021dafb21ab7e792c016ca3cd844e968c3",
-      "keycardPath": "m/43'/60'/1581'/576409789'/1058927117'/262047290'/1603510303'"
+      "keycardPath": "m/43'/60'/1581'/576409789'/1058927117'/262047290'/1603510303'",
+      "anonAddress": "0xc797db446be385e6f9043c1eb9bcad37a05fc54f",
+      "devTag": "wb-1a39c79c5110"
     },
     {
       "owner": "alice",
       "formId": "FORM-UPPER",
       "privHex": "2e8c2acd3426d555b15627095881be39eacbbba38d43fa90f4ac2982afcd1dcf",
       "pubHex": "02be47e76577f0bf139d12e8ed1944703e2266064954a846dcafbf4a1b3bbc67e9",
-      "keycardPath": "m/43'/60'/1581'/609219903'/962427115'/2043460689'/1526061451'"
+      "keycardPath": "m/43'/60'/1581'/609219903'/962427115'/2043460689'/1526061451'",
+      "anonAddress": "0xd065f7830bd0684059810026fd61bd5d9193b04c",
+      "devTag": "wb-f3306d1599e5"
     },
     {
       "owner": "alice",
       "formId": "form-žluť",
       "privHex": "e6bac1b62142f868f51f20638eeae2352ffb897ac7a65e739b879c4bbe9e35f7",
       "pubHex": "0272501ea3137c88356c740f5b91781644ab66d5015df0005e0c130e427608d356",
-      "keycardPath": "m/43'/60'/1581'/1474409785'/1532709854'/1151622121'/1653657370'"
+      "keycardPath": "m/43'/60'/1581'/1474409785'/1532709854'/1151622121'/1653657370'",
+      "anonAddress": "0xbcdfcae757b0ae6ea1c66a627655affa7940be5c",
+      "devTag": "wb-2cf21e852e07"
     },
     {
       "owner": "bob",
       "formId": "form-639a2554",
       "privHex": "40586c63bb39cc316d7e955829266cd671d31e609c6818dc7d3835659218d3db",
       "pubHex": "03cbd86857f346b8fb8932ff213d5c54000b18fc6ffcfc939048d87bbd686b2925",
-      "keycardPath": "m/43'/60'/1581'/11022128'/1577926826'/1799408082'/489631137'"
+      "keycardPath": "m/43'/60'/1581'/11022128'/1577926826'/1799408082'/489631137'",
+      "anonAddress": "0x949cab1e966416739c2da9f4a27fb3216f305ba4",
+      "devTag": "wb-ac9598efc650"
     },
     {
       "owner": "bob",
       "formId": "parity-f1",
       "privHex": "3c695c769b45c9ca07381acc9cc954aba09364f6464706269b8cb602b2303ae2",
       "pubHex": "03d2b110461f9bd64b90ab498422073229795499aab1e5056ba0aaa9b63005c9c0",
-      "keycardPath": "m/43'/60'/1581'/576409789'/1058927117'/262047290'/1603510303'"
+      "keycardPath": "m/43'/60'/1581'/576409789'/1058927117'/262047290'/1603510303'",
+      "anonAddress": "0xce43f4ddd83ce2baab8d2f22aeadda742bfead3c",
+      "devTag": "wb-749a55d6bc57"
     },
     {
       "owner": "bob",
       "formId": "FORM-UPPER",
       "privHex": "889805f148b6335c52701720973ad50c374853d4ba497606e15bed21e0171b96",
       "pubHex": "02bd8de20bb47437c0af0c911dd85a763a8556419bc68aa850b5529128c950ebce",
-      "keycardPath": "m/43'/60'/1581'/609219903'/962427115'/2043460689'/1526061451'"
+      "keycardPath": "m/43'/60'/1581'/609219903'/962427115'/2043460689'/1526061451'",
+      "anonAddress": "0xa4adf8c1597d0497b77bc760b3fbc5b6671acd47",
+      "devTag": "wb-03a2b8c5b94c"
     },
     {
       "owner": "bob",
       "formId": "form-žluť",
       "privHex": "fb1c90a4122482f1f930cbaa7c1763c9828e5100bb34c46bf27218b12f1d4fdb",
       "pubHex": "02301e4e41aa9438ce5e428ae97a18f8858da6b942c10eebb4c75e71cd3ffe058d",
-      "keycardPath": "m/43'/60'/1581'/1474409785'/1532709854'/1151622121'/1653657370'"
+      "keycardPath": "m/43'/60'/1581'/1474409785'/1532709854'/1151622121'/1653657370'",
+      "anonAddress": "0xc03661b66369134a67d5450838250635d2383cc3",
+      "devTag": "wb-36ce98abe655"
     },
     {
       "owner": "carol",
       "formId": "form-639a2554",
       "privHex": "fbbef4fcd968e1cf4393e34ab06a10308d3f36aa9979c1ced073d0deac1ef1d9",
       "pubHex": "03662fd64956ad6ec4504c4ebd2482fffc5681a505082afd76b6d1873af48cd41d",
-      "keycardPath": "m/43'/60'/1581'/11022128'/1577926826'/1799408082'/489631137'"
+      "keycardPath": "m/43'/60'/1581'/11022128'/1577926826'/1799408082'/489631137'",
+      "anonAddress": "0xe6963b4fd6db490497fdd4f71763c55ff226c770",
+      "devTag": "wb-4d0121cec0d3"
     },
     {
       "owner": "carol",
       "formId": "parity-f1",
       "privHex": "4119c1a1943d0b021f38c4b6b87ac72410dde5a18b3547ad6b2c21e291f8d1b8",
       "pubHex": "0210a97ce4dce0e91836a732c0d01ce158be95caf9d2dde0ab411e7ca3a8e86b8c",
-      "keycardPath": "m/43'/60'/1581'/576409789'/1058927117'/262047290'/1603510303'"
+      "keycardPath": "m/43'/60'/1581'/576409789'/1058927117'/262047290'/1603510303'",
+      "anonAddress": "0x009975f778a7ab63665d6b550dc13c900a34e48e",
+      "devTag": "wb-4b70d9a7fde6"
     },
     {
       "owner": "carol",
       "formId": "FORM-UPPER",
       "privHex": "6a32cdedb57f16c1a9db0084d8e0dbf5aa7382fe1ae98b651597fbe2ba6c43a5",
       "pubHex": "027aec355b4e6483c62deb89ce608211a766a98234899b113ef02aadb3dfef2aca",
-      "keycardPath": "m/43'/60'/1581'/609219903'/962427115'/2043460689'/1526061451'"
+      "keycardPath": "m/43'/60'/1581'/609219903'/962427115'/2043460689'/1526061451'",
+      "anonAddress": "0x6b49d13d2349726d7b129171040a319bda4e2776",
+      "devTag": "wb-213ff423a03b"
     },
     {
       "owner": "carol",
       "formId": "form-žluť",
       "privHex": "5be2b151a1086f7dff36804eb30dcc81108d681925095e51bae21d8119855f47",
       "pubHex": "028a884646075d2e9d21059b17663ba1f9a6b3922e3b191dcdf0c84456334f1920",
-      "keycardPath": "m/43'/60'/1581'/1474409785'/1532709854'/1151622121'/1653657370'"
+      "keycardPath": "m/43'/60'/1581'/1474409785'/1532709854'/1151622121'/1653657370'",
+      "anonAddress": "0x50a8518b9366d43a831492f9a6cc21e27fba1e88",
+      "devTag": "wb-ce6a06b35738"
     }
   ],
   "formSeal": {

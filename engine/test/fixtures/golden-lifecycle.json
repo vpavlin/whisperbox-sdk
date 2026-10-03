@@ -179,6 +179,40 @@
     },
     {
       "v": 1,
+      "id": "form:shared",
+      "type": "form.publish",
+      "hlc": {
+        "wall": 100,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "id": "shared",
+        "title": "shared",
+        "description": "",
+        "creator": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
+        "publicKey": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
+        "createdAt": 100,
+        "questions": [
+          {
+            "id": "q1",
+            "type": "boolean",
+            "text": "ok?",
+            "required": true
+          }
+        ],
+        "whitelist": {
+          "type": "none",
+          "value": ""
+        },
+        "signature": null
+      },
+      "pub": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
+      "sig": "086d1d6fc2d93183ba76339e1c201854a53233a6e5d2467581b2d567928b06ab74c9862870324646681db8c39e6eb10e127f1ca6f2b4edc5bd1f30e3fcb33847"
+    },
+    {
+      "v": 1,
       "id": "resp:c5b92d2935373954a66fd0d10ef5eb415e7d0ae827b3acaec008c852cb5807b4",
       "type": "response.submit",
       "hlc": {
@@ -596,6 +630,75 @@
     },
     {
       "v": 1,
+      "id": "resp:0be6eada32ac0e95d9d171d7280bb668b1345c722fc284a1e643f6a7a84058bb",
+      "type": "response.submit",
+      "hlc": {
+        "wall": 9000,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "encryptedPayload": "0103b4b086b397eda6e47092f757d45ea7061c19f0a86af9bc469452a539b955e4204f6812d70068249d4fce4dbccbfa9cb12742a3a755f1f5f8f54eadc4cbb96cf761ba09d3b0f7ee9703bd4aaac1b72b70b9b482254d0e8453a8e14f82a391911029b964bef3041fca94fbe34ad1bd1c5c382d2efea4ceea61f0a73fe2779306bfd10ad986ead1c29c893efb2bc33c7f3e343f89ea7daf45a1678c27bb215cb695c14de316fcfaeda768b2dabdedc1a3c1b24bf36ece459b9192059adcc2dd0d89b3f047734ebad83a37e27e003adae81b25d765a9765ce269ab38ac0e07635a3ef1941962c18552d3411f5e2d7323a95b11af5461d047b80c6f4f9053f1afdb76ae8aa05d1d43"
+      }
+    },
+    {
+      "v": 1,
+      "id": "coowner:shared:0x71eee9485269aba601176f7b22fbbef890d1ddc9",
+      "type": "form.coowner",
+      "hlc": {
+        "wall": 9100,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "formId": "shared",
+        "author": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
+        "owner": "0x71eee9485269aba601176f7b22fbbef890d1ddc9",
+        "sealedKey": "01abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+      },
+      "pub": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
+      "sig": "e109db4baafa3a24307467f98f0d21b36bc388b2d92bd14b5d7ec582a11be02748419b2a9dac90e11fa9cf6853faa5ce615c44efd74b254c03ed2306a84c2cd4"
+    },
+    {
+      "v": 1,
+      "id": "confirm:shared:c-shared-9000",
+      "type": "response.confirm",
+      "hlc": {
+        "wall": 9200,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "formId": "shared",
+        "confirmationId": "c-shared-9000",
+        "author": "0x71eee9485269aba601176f7b22fbbef890d1ddc9"
+      },
+      "pub": "033a659c4287ad5791ae2fd94b9441e523cd49ff878de0d18b8a3d1427c55b1543",
+      "sig": "626d6197e437e8ad939381cf2e74f7a0fb45b40e2f4808645c152e62cc806530001c5685f310c76ba9402569247b3984d5137ab04e5e3d0922b186a2f3f6db9b"
+    },
+    {
+      "v": 1,
+      "id": "close:shared:co",
+      "type": "form.close",
+      "hlc": {
+        "wall": 9300,
+        "ctr": 0,
+        "dev": "d"
+      },
+      "dev": "d",
+      "payload": {
+        "formId": "shared",
+        "expiresAt": null,
+        "author": "0x71eee9485269aba601176f7b22fbbef890d1ddc9"
+      },
+      "pub": "033a659c4287ad5791ae2fd94b9441e523cd49ff878de0d18b8a3d1427c55b1543",
+      "sig": "1e83a0633b12b7f244bcb86c5356fcfdf61924af9d81df249673986ff71e478b34ea64c8a17617f07e7d85b951f08622aefa1b806e096ed91f81d9c015f7258e"
+    },
+    {
+      "v": 1,
       "id": "resp:0e6ce07091ec426fcfdb5b437d94f29429e02adf4a9a20836d02c686e4d2ad09",
       "type": "response.submit",
       "hlc": {
@@ -650,8 +753,10 @@
         "showResponseCount": true,
         "thankYou": "",
         "shuffleQuestions": false,
+        "anonymous": false,
         "allowEdits": false,
         "editWindowMinutes": null,
+        "coOwners": [],
         "version": 1,
         "updatedAt": null,
         "status": "open",
@@ -683,8 +788,10 @@
         "showResponseCount": false,
         "thankYou": "",
         "shuffleQuestions": false,
+        "anonymous": false,
         "allowEdits": false,
         "editWindowMinutes": null,
+        "coOwners": [],
         "version": 1,
         "updatedAt": null,
         "status": "open",
@@ -714,8 +821,10 @@
         "showResponseCount": false,
         "thankYou": "",
         "shuffleQuestions": false,
+        "anonymous": false,
         "allowEdits": true,
         "editWindowMinutes": 15,
+        "coOwners": [],
         "version": 1,
         "updatedAt": null,
         "status": "open",
@@ -755,8 +864,10 @@
         "showResponseCount": false,
         "thankYou": "thanks!",
         "shuffleQuestions": false,
+        "anonymous": false,
         "allowEdits": false,
         "editWindowMinutes": null,
+        "coOwners": [],
         "version": 3,
         "updatedAt": 8000,
         "status": "open",
@@ -786,8 +897,10 @@
         "showResponseCount": false,
         "thankYou": "",
         "shuffleQuestions": false,
+        "anonymous": false,
         "allowEdits": false,
         "editWindowMinutes": null,
+        "coOwners": [],
         "version": 1,
         "updatedAt": null,
         "status": "closed",
@@ -795,13 +908,54 @@
           "c-life-150",
           "c-life-350"
         ]
+      },
+      "shared": {
+        "id": "shared",
+        "creator": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
+        "publicKey": "032115bedc69dabaaa40f39d9d418b983d18eca48915b25f85d5251a78cca06fe0",
+        "createdAt": 100,
+        "title": "shared",
+        "description": "",
+        "expiresAt": null,
+        "questions": [
+          {
+            "id": "q1",
+            "type": "boolean",
+            "text": "ok?",
+            "required": true
+          }
+        ],
+        "whitelist": {
+          "type": "none",
+          "value": ""
+        },
+        "maxResponses": null,
+        "showResponseCount": false,
+        "thankYou": "",
+        "shuffleQuestions": false,
+        "anonymous": false,
+        "allowEdits": false,
+        "editWindowMinutes": null,
+        "coOwners": [
+          {
+            "address": "0x71eee9485269aba601176f7b22fbbef890d1ddc9",
+            "sealedKey": "01abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab"
+          }
+        ],
+        "version": 1,
+        "updatedAt": null,
+        "status": "open",
+        "confirmations": [
+          "c-shared-9000"
+        ]
       }
     },
     "feed": [
       "capped",
       "dated",
       "editable",
-      "edited"
+      "edited",
+      "shared"
     ],
     "responses": [
       {
@@ -940,6 +1094,15 @@
         "encryptedPayload": "0102c4593a122364b22e2b31f2bdad61c7eda0bd6be6e65655ba5a075a7e4292fda88f7ce3cf54f31424c791e0f4e282f9dd6120c248eef60762a362e211ced2df2d75edccd12a61d8631aa53c17faa43e705052324d058d0b62e1c6f084f818fc2fab621c114e798ed0d22dbfcef90f26c2f5fe41448965f640128ab24215cb8d74aa7ecf02500c72dbd82432ec8bac2c907ec95d1b54bdb19bff90613e7dd9811a6d4913e67f1fd3fec1de3a68b5142e45cca738790e3d7ab64fdfd71f83364df1a0dca4c13ba3d8d58e47b8a389f100b2f949d30215831b86813b6a703e2cd6d732e2db868bf3f082bffcc40cd22629b34ab76acc1e427c5e7d331d2151c373be4a65924e2db7d6d6aeaed9c757cfabf069c79de4b8597cb1f9a7eb65a8c1964a3e8d933f4da93f3b276d3db3fbf41261731631b436a47dcb2f9a1d9d2c52888d0218f858a952441ce1becbb7e5f78b513d152e85db1a830e455ac85086666cc8951001b584f83be09895a92704a0f4a83bea4b6fb2837bad79d34782f6806372d147ff43c3238a3c29ce2ab98654cc0f47c3132448f1dd0a71dd5e14e458e6425dc2b351591fc4c6d06bc9a7f44689fcabe947519b195bff36713f208ff7bbde8edb"
       },
       {
+        "id": "resp:0be6eada32ac0e95d9d171d7280bb668b1345c722fc284a1e643f6a7a84058bb",
+        "hlc": {
+          "wall": 9000,
+          "ctr": 0,
+          "dev": "d"
+        },
+        "encryptedPayload": "0103b4b086b397eda6e47092f757d45ea7061c19f0a86af9bc469452a539b955e4204f6812d70068249d4fce4dbccbfa9cb12742a3a755f1f5f8f54eadc4cbb96cf761ba09d3b0f7ee9703bd4aaac1b72b70b9b482254d0e8453a8e14f82a391911029b964bef3041fca94fbe34ad1bd1c5c382d2efea4ceea61f0a73fe2779306bfd10ad986ead1c29c893efb2bc33c7f3e343f89ea7daf45a1678c27bb215cb695c14de316fcfaeda768b2dabdedc1a3c1b24bf36ece459b9192059adcc2dd0d89b3f047734ebad83a37e27e003adae81b25d765a9765ce269ab38ac0e07635a3ef1941962c18552d3411f5e2d7323a95b11af5461d047b80c6f4f9053f1afdb76ae8aa05d1d43"
+      },
+      {
         "id": "resp:0e6ce07091ec426fcfdb5b437d94f29429e02adf4a9a20836d02c686e4d2ad09",
         "hlc": {
           "wall": 61000,
@@ -1015,6 +1178,13 @@
           "ctr": 0,
           "dev": "d"
         }
+      },
+      "shared": {
+        "c-shared-9000": {
+          "wall": 9200,
+          "ctr": 0,
+          "dev": "d"
+        }
       }
     },
     "creator": {
@@ -1024,7 +1194,8 @@
         "dated",
         "editable",
         "edited",
-        "life"
+        "life",
+        "shared"
       ]
     },
     "pending": {
@@ -1032,9 +1203,9 @@
       "events": []
     },
     "dropped": {
-      "count": 1,
+      "count": 2,
       "reasons": {
-        "not-creator": 1
+        "not-creator": 2
       }
     }
   },
@@ -1045,7 +1216,8 @@
       "dated",
       "editable",
       "edited",
-      "life"
+      "life",
+      "shared"
     ],
     "responses": {
       "capped": [
@@ -1195,6 +1367,25 @@
             "dev": "d"
           }
         }
+      ],
+      "shared": [
+        {
+          "respondent": "0x0000000000000000000000000000000000000011",
+          "submittedAt": 9000,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": null,
+          "confirmationId": "c-shared-9000",
+          "hlc": {
+            "wall": 9000,
+            "ctr": 0,
+            "dev": "d"
+          }
+        }
       ]
     },
     "confirmations": {
@@ -1209,6 +1400,9 @@
       "life": [
         "c-life-150",
         "c-life-350"
+      ],
+      "shared": [
+        "c-shared-9000"
       ]
     },
     "dropped": {
@@ -1221,6 +1415,44 @@
         "sig-invalid": 2,
         "edit-too-late": 1
       }
+    },
+    "undecrypted": 0
+  },
+  "coOwner": "0x71eee9485269aba601176f7b22fbbef890d1ddc9",
+  "coView": {
+    "address": "0x71eee9485269aba601176f7b22fbbef890d1ddc9",
+    "forms": [
+      "shared"
+    ],
+    "responses": {
+      "shared": [
+        {
+          "respondent": "0x0000000000000000000000000000000000000011",
+          "submittedAt": 9000,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": null,
+          "confirmationId": "c-shared-9000",
+          "hlc": {
+            "wall": 9000,
+            "ctr": 0,
+            "dev": "d"
+          }
+        }
+      ]
+    },
+    "confirmations": {
+      "shared": [
+        "c-shared-9000"
+      ]
+    },
+    "dropped": {
+      "count": 0,
+      "reasons": {}
     },
     "undecrypted": 0
   }

@@ -37,6 +37,7 @@ export const EventType = Object.freeze({
   FORM_CLOSE: "form.close",
   FORM_REOPEN: "form.reopen",   // 0.3.2+: creator re-opens a closed form
   FORM_UPDATE: "form.update",   // 0.3.6+: creator edits a published form (latest wins)
+  FORM_COOWNER: "form.coowner", // 0.3.8+: creator shares the form's key with a co-owner
 });
 
 // Events only the form's creator may author (gated). Gating: payload.author ==
@@ -46,6 +47,7 @@ export const CREATOR_GATED = new Set([
   EventType.FORM_CLOSE,
   EventType.FORM_REOPEN,
   EventType.FORM_UPDATE,
+  EventType.FORM_COOWNER,
 ]);
 
 // Open events: any participant may author; no event-level signature allowed.
@@ -68,6 +70,7 @@ export const responseConfirmId = (formId, confirmationId) =>
 export const formCloseId = (formId, nonce) => (nonce ? `close:${lc(formId)}:${nonce}` : `close:${lc(formId)}`);
 export const formReopenId = (formId, nonce) => `reopen:${lc(formId)}:${nonce}`;
 export const formUpdateId = (formId, nonce) => `update:${lc(formId)}:${nonce}`;
+export const formCoOwnerId = (formId, owner) => `coowner:${lc(formId)}:${lc(owner)}`;
 /** One receipt event for many responses ("confirm all"): content-addressed by the ids. */
 export const responseConfirmBatchId = (formId, confirmationIds) =>
   `confirm:${lc(formId)}:b:${bytesToHex(sha256(utf8ToBytes([...confirmationIds].sort().join(",")))).slice(0, 16)}`;
@@ -166,5 +169,18 @@ export function evFormUpdate({ hlc, dev, formId, author, form, nonce }) {
     hlc,
     dev,
     payload: { formId: lc(formId), author: lc(author), form: { ...form } },
+  };
+}
+
+/** Share the form's key with a co-owner (creator-gated): sealedKey = ECIES(co-owner pub,
+ *  form private key hex). Co-owners can read answers and send receipts; nothing else. */
+export function evFormCoOwner({ hlc, dev, formId, author, owner, sealedKey }) {
+  return {
+    v: 1,
+    id: formCoOwnerId(formId, owner),
+    type: EventType.FORM_COOWNER,
+    hlc,
+    dev,
+    payload: { formId: lc(formId), author: lc(author), owner: lc(owner), sealedKey },
   };
 }

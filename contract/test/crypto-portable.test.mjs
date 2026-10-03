@@ -84,6 +84,9 @@ test("per-form keys: portable == node reference == golden; sealed-to-form opens 
     assert.strictEqual(d.pubHex, k.pubHex, `${k.owner}/${k.formId}`);
     assert.strictEqual(P.toHex(d.priv), k.privHex);
     assert.strictEqual(P.keycardFormKeyPath(k.formId), k.keycardPath);
+    assert.strictEqual(P.deriveAnonIdentity(byName[k.owner], k.formId).address, k.anonAddress, "anonymous identity (portable == node)");
+    assert.notStrictEqual(k.anonAddress, byName[k.owner].address, "anonymous address != real address");
+    assert.strictEqual(P.responseDevTag("wb-dev-" + k.owner, k.formId), k.devTag);
     assert.notStrictEqual(d.pubHex, byName[k.owner].pubHex, "form key != identity key");
     assert.match(k.keycardPath, /^m\/43'\/60'\/1581'(\/\d+'){4}$/, "EIP-1581 subtree, 4 hardened indices");
   }

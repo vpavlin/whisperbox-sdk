@@ -11,7 +11,7 @@
 //   catch-up (fp/ids/need) over event keys.
 import { mergeOne, mergeWhisperbox, eventKey } from "../../contract/src/merge.mjs";
 import { Clock } from "../../contract/src/hlc.mjs";
-import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId, formReopenId, formUpdateId, responseConfirmBatchId } from "../../contract/src/events.mjs";
+import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId, formReopenId, formUpdateId, formCoOwnerId, responseConfirmBatchId } from "../../contract/src/events.mjs";
 import * as C from "../../contract/src/crypto-portable.mjs";
 import { validateAnswers, emptyAnswer as emptyAnswerOf } from "../../contract/src/answers.mjs";
 import { computeState, creatorView } from "../../engine/src/engine.mjs";
@@ -45,6 +45,7 @@ function editableFromDef(def) {
     ...(def.showResponseCount === true ? { showResponseCount: true } : {}),
     ...(typeof def.thankYou === "string" && def.thankYou ? { thankYou: def.thankYou } : {}),
     ...(def.shuffleQuestions === true ? { shuffleQuestions: true } : {}),
+    ...(def.anonymous === true ? { anonymous: true } : {}),
     ...(def.allowEdits === true ? { allowEdits: true, editWindowMinutes: Number.isInteger(def.editWindowMinutes) && def.editWindowMinutes > 0 ? def.editWindowMinutes : 15 } : {}),
   };
 }
@@ -144,10 +145,14 @@ export class WhisperboxClient {
   housekeeping() {
     for (const d of Object.values(this.drafts)) if (d.publishAt != null && d.publishAt <= this.now()) this.publishDraft(d.id);
     const st = this.state();
-    const mine = Object.values(st.forms).filter((f) => f.creator === this.identity.address);
+    const mine = Object.values(st.forms).filter((f) => f.creator === this.identity.address || this.isCoOwner(f));
     if (!mine.length) return;
     const cv = this.decrypt(st);
     for (const f of mine) {
+      if (this.isCoOwner(f)) {   // co-owned: automatic receipts only (closing stays the creator's)
+        if (this.autoReceipts.has(f.id) && (cv.responses[f.id] || []).some((r) => !(f.confirmations || []).includes(confirmIdOf(r, f.id)))) this.confirmAll(f.id);
+        continue;
+      }
       const got = (cv.responses[f.id] || []);
       if (f.status === "open" && ((f.maxResponses && got.length >= f.maxResponses) || (f.expiresAt != null && this.now() > f.expiresAt))) this.closeForm(f.id);
       if (this.autoReceipts.has(f.id) && got.some((r) => !(f.confirmations || []).includes(confirmIdOf(r, f.id)))) this.confirmAll(f.id);
@@ -222,7 +227,7 @@ export class WhisperboxClient {
   }
   // Admission gates (mirror WhisperboxCoreImpl::admitEvent).
   admit(e) {
-    if (e.type === EventType.FORM_PUBLISH || e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.FORM_CLOSE || e.type === EventType.FORM_REOPEN || e.type === EventType.FORM_UPDATE) {
+    if (e.type === EventType.FORM_PUBLISH || e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.FORM_CLOSE || e.type === EventType.FORM_REOPEN || e.type === EventType.FORM_UPDATE || e.type === EventType.FORM_COOWNER) {
       if (!C.verifyEvent(e)) { this.diag.admDropSig++; return false; }
       return true;
     }
@@ -314,6 +319,7 @@ export class WhisperboxClient {
   /** opts.publicKey: seal to a key stored with addFormKey (Keycard) instead of the derived one. */
   createForm(def, opts = {}) {
     if (!def || typeof def !== "object") return { ok: false, error: "def must be an object" };
+    if (def.anonymous === true && def.whitelist && def.whitelist.type !== "none") return { ok: false, error: "an anonymous form can't be members-only (that needs real addresses)" };
     const formId = lc(def.id) || this.newFormId();
     let publicKey = C.deriveFormKey(this.identity, formId).pubHex;
     if (opts.publicKey) {
@@ -336,11 +342,32 @@ export class WhisperboxClient {
   updateForm(formId, def) {
     formId = lc(formId);
     if (!def || typeof def !== "object") return { ok: false, error: "def must be an object" };
+    if (def.anonymous === true && def.whitelist && def.whitelist.type !== "none") return { ok: false, error: "an anonymous form can't be members-only (that needs real addresses)" };
     const f = this.state().forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
     if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
     this.adopt(this.buildEvent(EventType.FORM_UPDATE, formUpdateId(formId, C.randomHex(6)), { formId, author: this.identity.address, form: editableFromDef(def) }, true));
     return { ok: true, formId };
+  }
+  isCoOwner(f) { return f.creator !== this.identity.address && (f.coOwners || []).some((c) => c.address === this.identity.address); }
+  coOwnedIds(st) { return Object.values(st.forms).filter((f) => this.isCoOwner(f)).map((f) => f.id); }
+  /** Share a form's key with a co-owner (creator): they can read answers + send receipts.
+   *  code = their co-owner code (33-byte compressed public key, hex). Can't be revoked. */
+  addCoOwner(formId, code) {
+    formId = lc(formId); code = String(code || "").trim().toLowerCase();
+    if (!/^0[23][0-9a-f]{64}$/.test(code)) return { ok: false, error: "that isn't a co-owner code (66 hex characters)" };
+    const st = this.state();
+    const f = st.forms[formId];
+    if (!f) return { ok: false, error: "unknown form" };
+    if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
+    const key = this.formKeys(st).get(f.publicKey);
+    if (!key) return { ok: false, error: "this form's key isn't on this device" };
+    const owner = "0x" + C.sha256Hex(C.fromHex(code)).slice(24);
+    if (owner === this.identity.address) return { ok: false, error: "that's your own code" };
+    let sealedKey;
+    try { sealedKey = C.toHex(C.sealToCreator(null, code, C.toHex(key.priv))); } catch { return { ok: false, error: "that co-owner code isn't a valid key" }; }
+    this.adopt(this.buildEvent(EventType.FORM_COOWNER, formCoOwnerId(formId, owner), { formId, author: this.identity.address, owner, sealedKey }, true));
+    return { ok: true, owner };
   }
   closeForm(formId) {
     formId = lc(formId);
@@ -368,7 +395,7 @@ export class WhisperboxClient {
     const st = this.state();
     const f = st.forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
-    if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
+    if (f.creator !== this.identity.address && !this.isCoOwner(f)) return { ok: false, error: "not the creator or a co-owner" };
     const todo = (this.decrypt(st).responses[formId] || []).map((r) => confirmIdOf(r, formId)).filter((c) => c && !(f.confirmations || []).includes(c));
     let events = 0;
     for (let i = 0; i < todo.length; i += 100) {
@@ -390,7 +417,7 @@ export class WhisperboxClient {
     const st = this.state();
     const f = st.forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
-    if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
+    if (f.creator !== this.identity.address && !this.isCoOwner(f)) return { ok: false, error: "not the creator or a co-owner" };
     const r = (this.decrypt(st).responses[formId] || []).find((x) => lc(x.respondent) === respondent);
     if (!r) return { ok: false, error: "no decrypted response from that respondent" };
     const cid = confirmIdOf(r, formId);
@@ -427,12 +454,17 @@ export class WhisperboxClient {
     if (bad) return { ok: false, error: bad.error };
     const submittedAt = this.now();
     const confirmationId = isEdit && this.mySubs[formId] ? this.mySubs[formId] : C.randomHex(8);
-    const resp = { formId, respondent: this.identity.address, submittedAt, answers };
+    // anonymous form: answer as the per-form identity (no link to my address / other forms)
+    const me = f.anonymous ? C.deriveAnonIdentity(this.identity, formId) : this.identity;
+    const resp = { formId, respondent: me.address, submittedAt, answers };
     const inner = wl !== "none" || f.allowEdits   // editable forms are signed: nobody can "edit" someone else's answer
-      ? { signature: C.signInner(this.identity, resp), pub: this.identity.pubHex }
+      ? { signature: C.signInner(me, resp), pub: me.pubHex }
       : { signature: null, pub: null };
     const sealed = C.toHex(C.sealToCreator(null, f.publicKey, JSON.stringify({ ...resp, ...inner, confirmationId })));
     const e = this.buildEvent(EventType.RESPONSE_SUBMIT, responseSubmitId(sealed), { encryptedPayload: sealed }, false);
+    // per-form device tag on the wire: answers to different forms can't be linked by device
+    const tag = C.responseDevTag(this.deviceId, formId);
+    e.dev = tag; e.hlc = { ...e.hlc, dev: tag };
     this.mySubs[formId] = confirmationId;
     this.myAnswers[formId] = { answers, submittedAt, firstSubmittedAt: isEdit ? firstAt : submittedAt };   // private copy: the sealed blob only opens for the creator
     this.saveMeta();
@@ -468,7 +500,16 @@ export class WhisperboxClient {
   formKeys(st) {
     const keys = new Map();
     this._derived = this._derived || new Map();
+    this._coKeys = this._coKeys || new Map();
     for (const f of Object.values(st.forms)) {
+      if (this.isCoOwner(f)) {   // the creator sealed this form's key to me (form.coowner)
+        const c = f.coOwners.find((x) => x.address === this.identity.address);
+        const ck = f.id + "|" + c.sealedKey;
+        if (!this._coKeys.has(ck)) { let k = null; try { k = C.identityFromPriv(C.utf8Decode(C.eciesOpen(this.identity, c.sealedKey))); } catch { k = null; } this._coKeys.set(ck, k); }
+        const k = this._coKeys.get(ck);
+        if (k && k.pubHex === f.publicKey) keys.set(k.pubHex, k);
+        continue;
+      }
       if (f.creator !== this.identity.address || !f.publicKey) continue;
       const ck = this.cardKeys.get(f.id);
       if (ck && ck.pubHex === f.publicKey) { keys.set(ck.pubHex, ck); continue; }
@@ -503,13 +544,14 @@ export class WhisperboxClient {
     return creatorView(st, {
       identity: this.identity.address,
       open: (hex) => this.openWith(keys, st, hex),
+      alsoForms: this.coOwnedIds(st),
       verifyResponse: (pseudo) => C.verifyInner(pseudo.payload),
     });
   }
   snapshot() {
     const st = this.state();
     let cv = null;
-    if (st.creator) {
+    if (st.creator || this.coOwnedIds(st).length) {
       cv = this.decrypt(st);
       for (const [fid, list] of Object.entries(cv.responses)) {
         const confs = cv.confirmations[fid] || [];
@@ -540,7 +582,8 @@ export class WhisperboxClient {
           const confirmedNow = submitted && (f.confirmations || []).includes(cid);
           return { editUntil: until, canEdit: !confirmedNow && f.status === "open" && this.now() < until };
         })() : {}),
-        ...(mine ? (() => {   // "N new" since the creator last looked
+        coOwner: this.isCoOwner(f),
+        ...(mine || this.isCoOwner(f) ? (() => {   // "N new" since the creator / co-owner last looked
           const n = (cv?.responses?.[fid] || []).length;
           if (this.seen[fid] === undefined) { this.seen[fid] = n; seenDirty = true; }
           const nw = Math.max(0, n - this.seen[fid]); if (!this.hidden.has(fid)) newTotal += nw;
@@ -561,7 +604,7 @@ export class WhisperboxClient {
     formId = lc(formId);
     const st = this.state(); const f = st.forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
-    if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
+    if (f.creator !== this.identity.address && !this.isCoOwner(f)) return { ok: false, error: "not the creator or a co-owner" };
     const cell = (v) => (/[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v);
     const opt = (q, x) => (typeof x === "number" && q.options && q.options[x] !== undefined ? String(q.options[x]) : x == null ? "" : typeof x === "boolean" ? (x ? "Yes" : "No") : typeof x === "string" ? x : typeof x === "number" ? String(x) : x && typeof x === "object" && "other" in x ? "Other: " + x.other : JSON.stringify(x));
     const val = (q, v) => (Array.isArray(v) ? v.map((x) => opt(q, x)).join("; ") : opt(q, v));

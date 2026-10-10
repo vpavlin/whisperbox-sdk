@@ -1,0 +1,31 @@
+{
+  "name": "whisperbox-sdk",
+  "version": "0.5.0",
+  "private": true,
+  "description": "WhisperBox encrypted forms as a library: the protocol (contract, engine, client), form templates and a React Native adapter. The desktop half is the whisperbox_core Basecamp module.",
+  "type": "module",
+  "main": "rn/index.ts",
+  "license": "(MIT OR Apache-2.0)",
+  "repository": "https://github.com/vpavlin/whisperbox-sdk",
+  "scripts": {
+    "test": "node --test contract/test/crypto.test.mjs contract/test/crypto-portable.test.mjs templates/test/templates.test.mjs && cd engine && npm test --silent"
+  },
+  "peerDependencies": {
+    "@noble/curves": "2.3.0",
+    "@noble/hashes": "2.4.0",
+    "@noble/ciphers": "2.4.0",
+    "buffer": "^6.0.3",
+    "expo-file-system": "~57.0.0",
+    "expo-secure-store": "~57.0.0"
+  },
+  "peerDependenciesMeta": {
+    "expo-file-system": { "optional": true },
+    "expo-secure-store": { "optional": true }
+  },
+  "devDependencies": {
+    "@noble/curves": "2.3.0",
+    "@noble/hashes": "2.4.0",
+    "@noble/ciphers": "2.4.0",
+    "buffer": "^6.0.3"
+  }
+}

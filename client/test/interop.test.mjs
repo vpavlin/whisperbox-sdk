@@ -150,6 +150,15 @@ for (const layers of [1, 0]) {
 
       // 10. share links are identical on both sides
       assert.strictEqual(phone.shareUri(fA).uri, (await b.call("shareUri", [fA])).uri);
+
+      // 11. formSummary (another app's card) agrees across implementations; counts only for owners
+      const dS = await b.call("formSummary", [fL]), pS = phone.formSummary(fL);
+      for (const k of ["formId", "title", "status", "receipts", "responses", "canRead"]) assert.deepStrictEqual(pS[k], dS[k], "formSummary." + k);
+      assert.ok(dS.mine && !dS.coOwner && pS.coOwner && !pS.mine && dS.responses === 1, "creator vs co-owner, one answer");
+      const nS = phone.formSummary(dQ);
+      assert.ok(nS.ok && !nS.canRead && !("responses" in nS), "a non-owner gets no answer count (answers don't name their form)");
+      const dN = await b.call("formSummary", [pQ]);
+      assert.ok(dN.ok && !dN.canRead && !("responses" in dN) && dN.receipts === phone.formSummary(pQ).receipts, "...on the C++ side too; receipts are public");
     } finally { b.close(); }
   });
 }

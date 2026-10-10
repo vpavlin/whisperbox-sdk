@@ -15,7 +15,7 @@ import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, f
 import * as C from "../../contract/src/crypto-portable.mjs";
 import { validateAnswers, emptyAnswer as emptyAnswerOf, scoreAnswers } from "../../contract/src/answers.mjs";
 import { computeState, creatorView } from "../../engine/src/engine.mjs";
-import { buildInitial, respond } from "../../../third_party/loam-sync/dist/catchup.js";
+import { buildInitial, respond } from "../../loam-sync-pkg/dist/catchup.js";
 
 export { TOPIC };
 const lc = (s) => String(s ?? "").toLowerCase();
@@ -491,6 +491,23 @@ export class WhisperboxClient {
   forgetForm(formId) {
     formId = lc(formId); this.watched.delete(formId); delete this.pins[formId]; this.saveMeta(); this.emit();
     return { ok: true };
+  }
+  /** One form at a glance (another app's card): title, status, counts. Answer counts only for
+   *  the creator / a co-owner (a sealed answer doesn't say its form); receipts are public. */
+  formSummary(formId) {
+    formId = lc(formId);
+    const snap = this.snapshot();
+    const f = snap.state.forms[formId];
+    if (!f) return { ok: false, error: "unknown form" };
+    const canRead = !!(f.mine || f.coOwner);
+    const out = { ok: true, formId, title: f.title || "", status: f.status || "open", expiresAt: f.expiresAt ?? null, createdAt: f.createdAt || 0,
+      mine: !!f.mine, coOwner: !!f.coOwner, canRead, receipts: Array.isArray(f.confirmations) ? f.confirmations.length : 0 };
+    if (canRead) {
+      const list = snap.creatorView?.responses?.[formId] || [];
+      const last = list.reduce((m, r) => (typeof r.submittedAt === "number" && r.submittedAt > m ? r.submittedAt : m), 0);
+      Object.assign(out, { responses: list.length, newResponses: f.newResponses || 0, lastResponseAt: last || null });
+    }
+    return out;
   }
   shareUri(formId) {
     const f = this.state().forms[lc(formId)];

@@ -39,7 +39,7 @@ import * as transport from "./src/lib/loam-transport";            // your copy
 import { setAppId, createWhisperbox } from "./src/whisperbox/rn";
 import { template } from "./src/whisperbox/templates/templates.mjs";
 
-setAppId("frequencies");                 // register with Loam as your app, before boot()
+setAppId("freequencies");                 // register with Loam as your app, before boot()
 const wb = createWhisperbox({ transport });
 await wb.boot();                          // preferServiceBackend(true, appId) -> start(...)
 
@@ -69,7 +69,7 @@ pins. Consumers bump their pointer to get a fix.
 `npm install && npm test` runs the protocol's own tests here.
 
 Consumers: [whisperbox-logos](https://github.com/vpavlin/whisperbox-logos) (`packages/`),
-[frequencies](https://github.com/vpavlin/frequencies).
+[freequencies](https://github.com/vpavlin/freequencies).
 
 ## Licence
 

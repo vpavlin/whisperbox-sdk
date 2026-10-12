@@ -1,4 +1,4 @@
-// Form templates for event organisers (Frequencies and anyone else): plain form definitions
+// Form templates for event organisers (Freequencies and anyone else): plain form definitions
 // (SPEC §4.3/4.4) that createForm accepts as they are, on the phone (client.createForm) and on
 // the desktop (whisperbox_core.createForm(JSON.stringify(def))). Same definitions on both.
 //

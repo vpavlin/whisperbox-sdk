@@ -5,7 +5,7 @@
 //
 //   import * as transport from "./src/lib/loam-transport";      // the host's copy
 //   import { setAppId, createWhisperbox } from "./src/whisperbox/rn";
-//   setAppId("frequencies");                                    // register with Loam as yourself
+//   setAppId("freequencies");                                    // register with Loam as yourself
 //   const wb = createWhisperbox({ transport });
 //   await wb.boot();
 //   wb.client.createForm({ title, questions });  wb.client.formSummary(formId);

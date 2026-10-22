@@ -703,7 +703,10 @@ export class WhisperboxClient {
     const st = this.state(); const f = st.forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
     if (f.creator !== this.identity.address && !this.isCoOwner(f)) return { ok: false, error: "not the creator or a co-owner" };
-    const cell = (v) => (/[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v);
+    // Answers come from respondents: = + - @ (or tab/CR) first makes a spreadsheet formula
+    // (=HYPERLINK(...) leaks other cells). Plain numbers stay numbers. Same rule as the C++ core.
+    const neutral = (v) => (/^[=+\-@\t\r]/.test(v) && !/^[+-]?[0-9]+(\.[0-9]+)?$/.test(v) ? "'" + v : v);
+    const cell = (v0) => { const v = neutral(v0); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
     const opt = (q, x) => (typeof x === "number" && q.options && q.options[x] !== undefined ? String(q.options[x]) : x == null ? "" : typeof x === "boolean" ? (x ? "Yes" : "No") : typeof x === "string" ? x : typeof x === "number" ? String(x) : x && typeof x === "object" && "other" in x ? "Other: " + x.other : JSON.stringify(x));
     const val = (q, v) => (Array.isArray(v) ? v.map((x) => opt(q, x)).join("; ") : opt(q, v));
     const iso = (ms) => (ms > 0 ? new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z") : "");

@@ -60,14 +60,70 @@ function whitelistAddresses(wl) {
 }
 
 /** Parse a share link or bare id → { formId, by } (by = creator pinned by the link). */
+// null = not a usable link: a malformed escape, a form id that isn't one, or a creator that isn't
+// an address (review 2026-10-22: these used to throw, or wait for a form that can't exist).
+const FORM_ID_RE = /^[a-z0-9][a-z0-9._:-]{0,127}$/;
 export function parseLink(input) {
   const t = String(input || "").trim();
-  if (!t.startsWith("whisperbox://")) return t ? { formId: lc(t), by: null } : null;
+  if (!t.startsWith("whisperbox://")) return t && FORM_ID_RE.test(lc(t)) ? { formId: lc(t), by: null } : null;
   const q = t.slice(t.indexOf("?") + 1);
-  const params = Object.fromEntries(q.split("&").map((kv) => { const i = kv.indexOf("="); return i < 0 ? [kv, ""] : [kv.slice(0, i), decodeURIComponent(kv.slice(i + 1))]; }));
-  if (!params.id) return null;
+  let params;
+  try { params = Object.fromEntries(q.split("&").map((kv) => { const i = kv.indexOf("="); return i < 0 ? [kv, ""] : [kv.slice(0, i), decodeURIComponent(kv.slice(i + 1))]; })); }
+  catch { return null; }
+  if (!params.id || !FORM_ID_RE.test(lc(params.id))) return null;
   const by = lc(params.by || "");
-  return { formId: lc(params.id), by: isHexAddr(by) ? by : null };
+  if (by && !isHexAddr(by)) return null;
+  return { formId: lc(params.id), by: by || null };
+}
+
+
+// ── Shape validation, the same rules as whisperbox_core's wellFormedEvent (review 2026-10-22) ──
+// Untrusted JSON from the topic: anything that fails is dropped before it can be merged or folded,
+// so the phone and the desktop keep the same event set under hostile input.
+export const MAX_CLOCK_LEAD_MS = 5 * 60 * 1000;
+const isStr = (o, k, max = 4096, req = true) => (!(k in o) ? !req : typeof o[k] === "string" && o[k].length <= max && (!req || o[k].length > 0));
+const optStr = (o, k, max = 65536) => !(k in o) || o[k] === null || (typeof o[k] === "string" && o[k].length <= max);
+const optBool = (o, k) => !(k in o) || o[k] === null || typeof o[k] === "boolean";
+const optNum = (o, k) => !(k in o) || o[k] === null || (typeof o[k] === "number" && Number.isFinite(o[k]));
+const isInt = (x) => Number.isInteger(x) && x >= 0;
+const isObj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
+export const wellFormedQuestion = (q) => isObj(q) && isStr(q, "id", 128) && isStr(q, "type", 64)
+  && optStr(q, "text") && optStr(q, "help") && optStr(q, "minLabel", 512) && optStr(q, "maxLabel", 512) && optStr(q, "style", 32)
+  && optBool(q, "required") && optBool(q, "allowOther") && optBool(q, "shuffleOptions") && optNum(q, "min") && optNum(q, "max")
+  && (!("options" in q) || q.options === null || (Array.isArray(q.options) && q.options.length <= 500 && q.options.every((o) => typeof o === "string" && o.length <= 4096)));
+export const wellFormedFormFields = (f) => isObj(f)
+  && (!("questions" in f) || f.questions === null || (Array.isArray(f.questions) && f.questions.length <= 500 && f.questions.every(wellFormedQuestion)))
+  && optStr(f, "title") && optStr(f, "description") && optStr(f, "thankYou") && optStr(f, "quizKey", 4096)
+  && optNum(f, "expiresAt") && optNum(f, "maxResponses") && optNum(f, "editWindowMinutes") && optNum(f, "createdAt")
+  && ["showResponseCount", "shuffleQuestions", "anonymous", "allowEdits"].every((b) => optBool(f, b))
+  && (!("whitelist" in f) || f.whitelist === null || (isObj(f.whitelist) && optStr(f.whitelist, "type", 32) && optStr(f.whitelist, "value", 1 << 20)));
+export function wellFormedEvent(e) {
+  if (!isObj(e) || !isStr(e, "id", 512) || !isStr(e, "type", 64)) return false;
+  if ("v" in e && !Number.isInteger(e.v)) return false;
+  if (!optStr(e, "dev", 256) || !optStr(e, "pub", 256) || !optStr(e, "sig", 512)) return false;
+  const h = e.hlc;
+  if (!isObj(h) || !isInt(h.wall) || !isInt(h.ctr) || !optStr(h, "dev", 256)) return false;
+  const p = e.payload;
+  if (!isObj(p)) return false;
+  if (e.type === EventType.RESPONSE_SUBMIT) return isStr(p, "encryptedPayload", 4 << 20) && e.id === responseSubmitId(p.encryptedPayload);
+  if (e.type === EventType.FORM_PUBLISH) return isStr(p, "id", 128) && isStr(p, "creator", 64) && optStr(p, "publicKey", 256) && wellFormedFormFields(p) && e.id === formPublishId(p.id);
+  if (!isStr(p, "formId", 128) || !isStr(p, "author", 64)) return false;
+  if (e.type === EventType.RESPONSE_CONFIRM) {
+    if ("confirmationIds" in p) return Array.isArray(p.confirmationIds) && p.confirmationIds.length <= 1000 && p.confirmationIds.every((c) => typeof c === "string" && c.length <= 128);
+    return isStr(p, "confirmationId", 128);
+  }
+  if (e.type === EventType.FORM_UPDATE) return "form" in p && wellFormedFormFields(p.form);
+  if (e.type === EventType.FORM_COOWNER) return isStr(p, "owner", 64) && isStr(p, "sealedKey", 4096);
+  if (e.type === EventType.RESPONSE_REPLY) return isStr(p, "to", 128) && isStr(p, "sealed", 1 << 20);
+  if (e.type === EventType.FORM_CLOSE) return optNum(p, "expiresAt");
+  return e.type === EventType.FORM_REOPEN;
+}
+export function wellFormedCatchup(m) {
+  if (!isObj(m) || !isStr(m, "t", 16) || !optStr(m, "from", 256) || !optStr(m, "lo", 512) || !optStr(m, "hi", 512)) return false;
+  const strArr = (a, max) => Array.isArray(a) && a.length <= max && a.every((x) => typeof x === "string" && x.length <= 512);
+  if (m.t === "fp") return strArr(m.fps, 64) && strArr(m.bounds, 64) && m.fps.length > 0 && m.bounds.length + 1 === m.fps.length;
+  if (m.t === "ids" || m.t === "need") return strArr(m.ids, 5000);
+  return false;
 }
 
 export class WhisperboxClient {
@@ -102,8 +158,10 @@ export class WhisperboxClient {
     const parse = (s, d) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
     // Same repair as the core: drop unsigned form.publish placeholders, re-sort.
     const raw = parse(await this.store.get("wb-log"), []);
-    this.log = mergeWhisperbox((Array.isArray(raw) ? raw : []).filter((e) => e && e.id && !(e.type === EventType.FORM_PUBLISH && !e.sig)));
-    for (const e of this.log) this.clock.receive(e.hlc);
+    // wellFormedEvent also skips a peer's malformed event saved by an older version (review 2026-10-22)
+    this.log = mergeWhisperbox((Array.isArray(raw) ? raw : []).filter((e) => wellFormedEvent(e) && !(e.type === EventType.FORM_PUBLISH && !e.sig)));
+    const lead = this.now() + MAX_CLOCK_LEAD_MS;
+    for (const e of this.log) if (e.hlc.wall <= lead) this.clock.receive(e.hlc);   // never adopt a far-future clock
     this.watched = new Set(parse(await this.store.get("wb-watched"), []));
     this.pins = parse(await this.store.get("wb-pins"), {});
     this.mySubs = parse(await this.store.get("wb-mysubs"), {});
@@ -203,6 +261,7 @@ export class WhisperboxClient {
   handle(env) {
     if (!env || typeof env !== "object") return false;
     if (env.v === 2 && (env.t === "fp" || env.t === "ids" || env.t === "need")) {
+      if (!wellFormedCatchup(env)) { this.diag.admDropType++; return true; }
       const byKey = new Map(this.log.map((e) => [eventKey(e), e]));
       const step = respond([...byKey.keys()].map((id) => ({ id })), env, this.deviceId);
       for (const r of step.replies) this.sendEnvelope(r);
@@ -220,7 +279,8 @@ export class WhisperboxClient {
     }
     if (env.type === "EVENT" && env.event && typeof env.event === "object") {
       const e = env.event;
-      if (typeof e.id !== "string" || !e.hlc || typeof e.hlc !== "object" || !e.payload || typeof e.payload !== "object") { this.diag.admDropType++; return true; }
+      if (!wellFormedEvent(e)) { this.diag.admDropType++; return true; }
+      if (e.hlc.wall > this.now() + MAX_CLOCK_LEAD_MS) { this.diag.admDropFuture = (this.diag.admDropFuture || 0) + 1; return true; }   // WB-3
       if (!this.admit(e)) return true;
       if (mergeOne(this.log, e)) { this.diag.rxNew++; this.clock.receive(e.hlc); this.saveLog(); this.emit(); }
       else this.diag.rxDup++;
@@ -467,8 +527,9 @@ export class WhisperboxClient {
     const replyPub = C.deriveReplyKey(this.identity, formId, confirmationId).pubHex;
     const sealed = C.toHex(C.sealToCreator(null, f.publicKey, JSON.stringify({ ...resp, ...inner, confirmationId, replyPub })));
     const e = this.buildEvent(EventType.RESPONSE_SUBMIT, responseSubmitId(sealed), { encryptedPayload: sealed }, false);
-    // per-form device tag on the wire: answers to different forms can't be linked by device
-    const tag = C.responseDevTag(this.deviceId, formId);
+    // A fresh random tag per answer on the wire (was sha256(deviceId|formId): the device id is public
+    // in every signed event, so the tag linked anonymous answers to a device - review 2026-10-22, WB-5).
+    const tag = "wb-" + C.randomHex(6);
     e.dev = tag; e.hlc = { ...e.hlc, dev: tag };
     this.mySubs[formId] = confirmationId;
     this.myAnswers[formId] = { answers, submittedAt, firstSubmittedAt: isEdit ? firstAt : submittedAt };   // private copy: the sealed blob only opens for the creator
@@ -587,9 +648,12 @@ export class WhisperboxClient {
     }
     return list;
   }
+  // false = not sent: the reply key came from the respondent and may not be a curve point (WB-8)
   sendReply(formId, cid, replyPub, body) {
-    const sealed = C.toHex(C.sealToCreator(null, replyPub, JSON.stringify(body)));
+    let sealed;
+    try { sealed = C.toHex(C.sealToCreator(null, replyPub, JSON.stringify(body))); } catch { return false; }
     this.adopt(this.buildEvent(EventType.RESPONSE_REPLY, responseReplyId(formId, cid, C.randomHex(6)), { formId, author: this.identity.address, to: cid, sealed }, true));
+    return true;
   }
   /** Private reply to one answer (creator / co-owner): only that respondent can read it. */
   replyToResponse(formId, confirmationId, message) {
@@ -600,7 +664,8 @@ export class WhisperboxClient {
     if (f.creator !== this.identity.address && !this.isCoOwner(f)) return { ok: false, error: "not the creator or a co-owner" };
     const r = (this.decrypt(st).responses[formId] || []).find((x) => confirmIdOf(x, formId) === confirmationId);
     if (!r || !r.replyPub) return { ok: false, error: "that answer can't receive replies (sent by an older WhisperBox)" };
-    this.sendReply(formId, confirmationId, r.replyPub, { message: String(message).trim(), from: this.identity.address, at: this.now() });
+    if (!this.sendReply(formId, confirmationId, r.replyPub, { message: String(message).trim(), from: this.identity.address, at: this.now() }))
+      return { ok: false, error: "that answer has an invalid reply key, so it can't receive replies" };
     return { ok: true };
   }
   /** Quiz: send each answer that hasn't had a reply yet its score (privately). */
@@ -616,7 +681,7 @@ export class WhisperboxClient {
     for (const r of list) {
       if (r.replies > 0) continue;
       if (!r.replyPub) { skipped++; continue; }
-      this.sendReply(formId, confirmIdOf(r, formId), r.replyPub, { kind: "score", score: r.score, outOf: r.outOf, correct: r.correct, from: this.identity.address, at: this.now() });
+      if (!this.sendReply(formId, confirmIdOf(r, formId), r.replyPub, { kind: "score", score: r.score, outOf: r.outOf, correct: r.correct, from: this.identity.address, at: this.now() })) { skipped++; continue; }
       sent++;
     }
     return { ok: true, sent, skipped };

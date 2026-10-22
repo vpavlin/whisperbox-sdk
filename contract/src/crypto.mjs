@@ -14,9 +14,9 @@
 //   sig    = hex(compact ECDSA r||s, 64B), LOW-S (noble default)
 //   Verifier: strict low-S first, then lenient retry with s' = n - s.
 //
-// ── Response sealing (ECIES to the creator; ONLY the creator can open) ────────────
+// ── Response sealing (ECIES to the form key; its creator and co-owners can open) ───
 // Ground truth (whisperbox.org src/lib/waku.ts): the ENTIRE response JSON — formId,
-// respondent, submittedAt, answers, signature — is sealed to the creator's pubkey.
+// respondent, submittedAt, answers, signature — is sealed to the form's public key (form.publicKey).
 // Nothing about a response appears in plaintext on the topic: no identity leak, no
 // content leak, no "who answered what" metadata. The sealed blob must therefore be
 // self-contained (ephemeral pubkey embedded), exactly like Waku ECIES.

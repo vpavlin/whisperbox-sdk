@@ -22,11 +22,15 @@ let appId = "xyz.vpavlin.whisperbox";
 export function setAppId(id: string) { appId = id; }
 export function getAppId() { return appId; }
 
+/** Receive metadata from loam-transport >= 86b6bb3: the network timestamp (ns, 0 = none) etc.
+ *  An older transport passes nothing; answers then carry no network time (ADR 0019). */
+export type RxMeta = { ts?: number; tsMs?: number; source?: string; bearer?: string };
+type OnRx = (topic: string, candidates: Uint8Array[], meta?: RxMeta) => boolean;
 /** What the adapter needs from loam-transport (its public API). */
 export type Transport = {
   preferServiceBackend(shared: boolean, appId: string): void;
-  start(o: { deviceId: string; topics: string[]; onReceive: (topic: string, candidates: Uint8Array[]) => boolean; onStatus?: (s: string) => void }): Promise<unknown>;
-  storeSync(cb: (topic: string, candidates: Uint8Array[]) => boolean): Promise<unknown>;
+  start(o: { deviceId: string; topics: string[]; onReceive: OnRx; onStatus?: (s: string) => void }): Promise<unknown>;
+  storeSync(cb: OnRx): Promise<unknown>;
   publishSealed(topic: string, bytes: Uint8Array): Promise<unknown>;
   usingServiceBackend?(): boolean;
 };
@@ -65,10 +69,10 @@ export function createWhisperbox(o: Options) {
         await transport.start({
           deviceId: client.deviceId,
           topics: [TOPIC],
-          onReceive: (topic: string, candidates: Uint8Array[]) => {
+          onReceive: (topic: string, candidates: Uint8Array[], meta?: RxMeta) => {
             if (topic !== TOPIC) return false;
-            rx++; if (rx <= 3 || rx % 25 === 0) log("rx #" + rx + " new=" + client.diag.rxNew + " err=" + (client.diag.rxErr || 0));
-            return client.ingest(candidates);
+            rx++; if (rx <= 3 || rx % 25 === 0) log("rx #" + rx + " new=" + client.diag.rxNew + " err=" + (client.diag.rxErr || 0) + " netTs=" + (client.diag.netTs || 0));
+            return client.ingest(candidates, meta);
           },
           onStatus: (s: string) => { net.status = s; log("status: " + s); client.emit(); },
         });
@@ -77,7 +81,7 @@ export function createWhisperbox(o: Options) {
         // Protocol errors must not be reported as "start failed" (the transport IS up).
         try { client.onConnected(); } catch (e: any) { log("onConnected error " + (e?.message || e)); }
         log("store sync");
-        transport.storeSync((t: string, c: Uint8Array[]) => { try { return t === TOPIC && client.ingest(c); } catch { return false; } })
+        transport.storeSync((t: string, c: Uint8Array[], m?: RxMeta) => { try { return t === TOPIC && client.ingest(c, m); } catch { return false; } })
           .then(() => log("store sync done log=" + client.log.length)).catch((e: any) => log("store sync failed " + (e?.message || e)));
       } catch (e: any) {
         net.error = String(e?.message || e); net.status = "Offline"; log("start failed: " + net.error); client.emit();
@@ -100,7 +104,7 @@ export function createWhisperbox(o: Options) {
   function pullHistory() {
     if (!net.started) return Promise.resolve();
     client.resync();
-    return transport.storeSync((t: string, c: Uint8Array[]) => t === TOPIC && client.ingest(c)).then(() => client.emit());
+    return transport.storeSync((t: string, c: Uint8Array[], m?: RxMeta) => t === TOPIC && client.ingest(c, m)).then(() => client.emit());
   }
 
   return { client, net, boot, setSharedNode, pullHistory };

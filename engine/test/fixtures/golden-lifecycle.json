@@ -1655,5 +1655,309 @@
       "reasons": {}
     },
     "undecrypted": 0
+  },
+  "netTime": {
+    "resp:4e69485351e55d3edae047e2b08a9390c19e8d466336df8be23aab96f96a9ab8": 100,
+    "resp:15d1e8d7ce1eaed1da8a30b71702cb8aaca35d40ebe0f0d5885c508328482e3b": 350,
+    "resp:851a924380202a5a05aa6346258a288163421df40aa50b9b913e115b62d29596": 420,
+    "resp:27cf509f9db27f3f1260910709a264b0f89749a9603a50cb95a57a226b55cbb6": 480,
+    "resp:86f5dfab042539acbb3b4fb44e7f7d8d884d5688ec6b6c449e1d3a931b4e2c9c": 369000,
+    "resp:16d6af89b9521be29db7eb88497f270ad937d11c26008e6219a484a2092b58c8": 601000
+  },
+  "netView": {
+    "address": "0x69c9c22a0b186e36ac2eab6cee35fa09183596ef",
+    "forms": [
+      "capped",
+      "dated",
+      "editable",
+      "edited",
+      "life",
+      "shared"
+    ],
+    "responses": {
+      "capped": [
+        {
+          "respondent": "0xee97511adcf3c765b34a4c0de710d2eea2ad1036",
+          "submittedAt": 170,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": "9c6e4735d850b8c6055955ebf397e1b1a73abe699cadbd3581c7d2cd91218f8b147fba1b8ed7f06aae80ea0612270dbb76b71c7aabf6c107427c7e8801d30997",
+          "confirmationId": "c-capped-170",
+          "hlc": {
+            "wall": 170,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "verified": true,
+          "timeVerified": true,
+          "receivedAt": 100
+        },
+        {
+          "respondent": "0xbcfb7fff4068c2b91a2b9d2143309ca6988430d9",
+          "submittedAt": 140,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": null,
+          "confirmationId": "c-capped-140",
+          "hlc": {
+            "wall": 140,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "verified": false,
+          "timeVerified": false,
+          "receivedAt": null
+        },
+        {
+          "respondent": "0xbcfb7fff4068c2b91a2b9d2143309ca6988430d9",
+          "submittedAt": 150,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": "ed78640a70a01d15d60e752ae87292af2b32650ade70c8ce0c1b59dd0e2e3ab668428a7d91208ccae9dbd2b14b51e610e5421cd08e7103747ba9cbbc00321206",
+          "confirmationId": "c-capped-150",
+          "hlc": {
+            "wall": 150,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "verified": true,
+          "timeVerified": false,
+          "receivedAt": null
+        }
+      ],
+      "dated": [
+        {
+          "respondent": "0xf03832270f0da9bf175b4b69a20be59e6870bd36",
+          "submittedAt": 450,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": "75b6a0b210f2bec43401492053aa08dae1aae66c7c1ef4b104a9cb63cb24715879c6d02f9788d52c61738dbb17c9defa7f99a4facd5e77c0b20062dceeb1e1ff",
+          "confirmationId": "c-dated-450",
+          "hlc": {
+            "wall": 450,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "verified": true,
+          "timeVerified": false,
+          "receivedAt": null
+        },
+        {
+          "respondent": "0xa8437c67bb1e8c61ac189e370249c4715e4b4cdf",
+          "submittedAt": 550,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": "4f4a72e1aae3b97495f136b46e9ce90a7ea16f754cec535d37a3bc37cc202eb112e58712d6f31f269506a2fed37447f2dee5a29348963579113562c7605f760a",
+          "confirmationId": "c-dated-550",
+          "hlc": {
+            "wall": 550,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "verified": true,
+          "timeVerified": true,
+          "receivedAt": 480
+        }
+      ],
+      "editable": [
+        {
+          "respondent": "0x642694610af07bc6fcc24aeb4e2fb62d3a36787c",
+          "submittedAt": 961000,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": "7d6ad627a5945a3d9a560ee8f1304e8ac792c7bcbf808badb2742e08a0209d315f90ba36193d9a13ab386adace456ac42487b6416293ee6e9050653802c00473",
+          "confirmationId": "c-r1",
+          "hlc": {
+            "wall": 1000,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "edits": 2,
+          "verified": true,
+          "timeVerified": false,
+          "receivedAt": null
+        },
+        {
+          "respondent": "0x9444d6a084f49fdf51425356d8026afa0977e652",
+          "submittedAt": 2000,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": "54851fd8155667342670d9cdf3e3502789661cfef69488dd76494b54bd08ffa91bc8e53102a96e45efe7bb7df94dd15db01947313bb23c534d36beebc5ae057b",
+          "confirmationId": "c-r2",
+          "hlc": {
+            "wall": 2000,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "edits": 0,
+          "verified": true,
+          "timeVerified": false,
+          "receivedAt": null
+        },
+        {
+          "respondent": "0xc6f88545b2259455913af82c1b83cf2e4c206851",
+          "submittedAt": 5000,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": "25d68e78892ad83d30dc5357b98477ce5f342d362d1e7ba7935364f55d2a09790155c67cc702df3a489ec5e3fddcd771513cfa041f7c71b20e69a97121346af6",
+          "confirmationId": "c-r5",
+          "hlc": {
+            "wall": 5000,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "edits": 0,
+          "verified": true,
+          "timeVerified": false,
+          "receivedAt": null
+        }
+      ],
+      "edited": [],
+      "life": [
+        {
+          "respondent": "0x5b249973fb4e840498d454f2cd9b3f8a44075114",
+          "submittedAt": 150,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": "2328d975dc6ab0e3ca02984d597472a08b0661f94067025f8e71a8578c4e2c8f775f575527d582374f8fd4f9b8b7cfddf6e41d343ff6cae4282d4aff785379c8",
+          "confirmationId": "c-life-150",
+          "hlc": {
+            "wall": 150,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "verified": true,
+          "timeVerified": false,
+          "receivedAt": null
+        },
+        {
+          "respondent": "0x33d1b2e2b9ee188815b3cd49b6895849d8e16328",
+          "submittedAt": 250,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": "41898fb868ed0ff121c9865b203856fac0e3ff045e7e92ed7430cf48b91afbc923ca204d3684a4900c3dc72ad0d39edca4e24518305e1549cbf93a206a23e1ec",
+          "confirmationId": "c-life-250",
+          "hlc": {
+            "wall": 250,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "verified": true,
+          "timeVerified": true,
+          "receivedAt": 350
+        }
+      ],
+      "shared": [
+        {
+          "respondent": "0x8f42694dfc18afc5b19dee983229b88caa115638",
+          "submittedAt": 9400,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": "fbfce363786c415c61b50dd1e5049d1b6592af61436e08c16da8b1e684440a217c1d1f6eb5a03985e790b9b9566856c07c4d1aaa354c065db4d18cb4d21cde19",
+          "confirmationId": "c-reply",
+          "hlc": {
+            "wall": 9400,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "replyPub": "031a754bf93103d1ba6d65e5624a56605131c4715c392ba773d9404f750e14acf9",
+          "verified": true,
+          "timeVerified": false,
+          "receivedAt": null
+        },
+        {
+          "respondent": "0xc02df9adb10904d9d9f1533d9bca2b90574899dc",
+          "submittedAt": 9000,
+          "answers": [
+            {
+              "questionId": "q1",
+              "value": true
+            }
+          ],
+          "signature": "068ba971c1911ac82160a40425fba1d41a6b73f8dcdc8ac4e7458162b9077719229cc393006552cdfcc38f0706761f70454320961e04a77fcfdeae634296e3d8",
+          "confirmationId": "c-shared-9000",
+          "hlc": {
+            "wall": 9000,
+            "ctr": 0,
+            "dev": "d"
+          },
+          "verified": true,
+          "timeVerified": true,
+          "receivedAt": 369000,
+          "timeSkew": true
+        }
+      ]
+    },
+    "confirmations": {
+      "capped": [
+        "c-capped-150"
+      ],
+      "dated": [],
+      "editable": [
+        "c-r2"
+      ],
+      "edited": [],
+      "life": [
+        "c-life-150",
+        "c-life-350"
+      ],
+      "shared": [
+        "c-shared-9000"
+      ]
+    },
+    "dropped": {
+      "count": 6,
+      "reasons": {
+        "over-limit": 1,
+        "form-closed": 2,
+        "edit-after-receipt": 1,
+        "sig-invalid": 2
+      }
+    },
+    "undecrypted": 0
   }
 }

@@ -271,10 +271,24 @@ export function whitelistAddresses(wl) {
   return String(wl?.value ?? "").split(/[,\s]+/).map((a) => lc(a.trim())).filter(Boolean);
 }
 
+/** A signed submittedAt this far from the network time is flagged (timeSkew), ADR 0019. */
+export const MAX_TIME_SKEW_MS = 5 * 60 * 1000;
+
 export function creatorView(state, opts) {
   const identity = lc(opts.identity);
   const open = typeof opts.open === "function" ? opts.open : () => null;
   const verifyResponse = typeof opts.verifyResponse === "function" ? opts.verifyResponse : null;
+  // ADR 0019: netTime(eventId) -> the earliest Logos Delivery timestamp (ms) this device saw for
+  // that answer, or null. With it, close/expiry/cap/edit rules use the network's time; an answer
+  // with none falls back to its own HLC and is marked timeVerified:false. Without netTime the view
+  // is the HLC-only fold (identical on every replica; the golden vectors).
+  const netTime = typeof opts.netTime === "function" ? opts.netTime : null;
+  const whenOf = (blob) => {
+    const t = netTime ? Number(netTime(blob.id)) : NaN;
+    return Number.isFinite(t) && t > 0 ? { wall: t, net: true } : { wall: Number(blob.hlc?.wall), net: false };
+  };
+  // "at or after this creator-signed HLC": network time compares by wall clock, a claimed time as before
+  const atOrAfter = (w, blob, h) => (w.net ? w.wall >= Number(h?.wall) : compareHlc(blob.hlc, h) >= 0);
 
   // opts.alsoForms: forms this identity co-owns (it holds their key) - same view
   const also = new Set((opts.alsoForms || []).map(lc));
@@ -295,8 +309,20 @@ export function creatorView(state, opts) {
   const seenRespondent = new Map(); // formId → Set(respondent) — earliest HLC wins
 
   // Pool is HLC-ordered (fold invariant) → first accepted response per respondent
-  // is the min-HLC one, on every replica.
-  for (const blob of state.responses) {
+  // is the min-HLC one, on every replica. With network times: earliest network time first.
+  const pool = netTime
+    ? state.responses.map((b, i) => ({ b, i, w: whenOf(b) })).sort((x, y) => x.w.wall - y.w.wall || x.i - y.i).map((x) => x.b)
+    : state.responses;
+  for (const blob of pool) {
+    const w = whenOf(blob);
+    const timeFields = (o) => {
+      if (!netTime) return o;
+      o.timeVerified = w.net;
+      o.receivedAt = w.net ? w.wall : null;
+      // the signed claim far from the network's time: shown, not enforced
+      if (w.net && Number.isFinite(Number(o.submittedAt)) && Math.abs(Number(o.submittedAt) - w.wall) > MAX_TIME_SKEW_MS) o.timeSkew = true;
+      return o;
+    };
     let dec = null;
     try { dec = open(blob.encryptedPayload); } catch { dec = null; }
     if (!dec || typeof dec !== "object") { view.undecrypted += 1; continue; }
@@ -311,13 +337,13 @@ export function creatorView(state, opts) {
     // Sealed while the form was closed (any closed period, even if re-opened since).
     const spans = state.closedSpans?.[formId];
     if (spans && spans.length) {
-      if (spans.some((s) => compareHlc(blob.hlc, s.from) >= 0 && (s.to === null || compareHlc(blob.hlc, s.to) < 0))) { drop(view.dropped, "form-closed"); continue; }
+      if (spans.some((s) => atOrAfter(w, blob, s.from) && (s.to === null || !atOrAfter(w, blob, s.to)))) { drop(view.dropped, "form-closed"); continue; }
     } else if (f.status === "closed") {
       const ch = state.closeHlc?.[formId];
-      if (!ch || compareHlc(blob.hlc, ch) >= 0) { drop(view.dropped, "form-closed"); continue; }
+      if (!ch || atOrAfter(w, blob, ch)) { drop(view.dropped, "form-closed"); continue; }
     }
     // Close-at date (expiresAt, ms): answers stamped after it don't count.
-    if (f.expiresAt != null && Number(blob.hlc?.wall) > Number(f.expiresAt)) { drop(view.dropped, "expired"); continue; }
+    if (f.expiresAt != null && w.wall > Number(f.expiresAt)) { drop(view.dropped, "expired"); continue; }
 
     // Inner signature (ADR 0019): every answer from 0.5.0 is signed by the respondent it names.
     // A bad signature is dropped. An unsigned answer must not count: on members-only and editable
@@ -336,9 +362,9 @@ export function creatorView(state, opts) {
       else {
         // still the creator's to read and export (answers from older clients are unsigned), but it
         // proves nothing: it doesn't take a respondent's slot, count towards the cap or edit anything
-        view.responses[formId].push({ respondent: lc(typeof dec.respondent === "string" ? dec.respondent : ""), submittedAt: dec.submittedAt ?? null,
+        view.responses[formId].push(timeFields({ respondent: lc(typeof dec.respondent === "string" ? dec.respondent : ""), submittedAt: dec.submittedAt ?? null,
           answers: Array.isArray(dec.answers) ? dec.answers : [], signature: null,
-          confirmationId: typeof dec.confirmationId === "string" ? dec.confirmationId : null, hlc: blob.hlc, verified: false });
+          confirmationId: typeof dec.confirmationId === "string" ? dec.confirmationId : null, hlc: blob.hlc, verified: false }));
         continue;
       }
     }
@@ -357,14 +383,14 @@ export function creatorView(state, opts) {
       // A later response from the same respondent: an EDIT, if the form allows it, inside
       // the window after their first answer, and before the creator's receipt for it.
       if (!f.allowEdits || !prev.entry) { drop(view.dropped, "duplicate-respondent"); continue; }
-      if (Number(blob.hlc?.wall) - prev.firstWall > (f.editWindowMinutes || 15) * 60000) { drop(view.dropped, "edit-too-late"); continue; }
+      if (w.wall - prev.firstWall > (f.editWindowMinutes || 15) * 60000) { drop(view.dropped, "edit-too-late"); continue; }
       const rh = state.receiptHlc?.[formId]?.[prev.cid];
-      if (rh && compareHlc(blob.hlc, rh) >= 0) { drop(view.dropped, "edit-after-receipt"); continue; }
+      if (rh && atOrAfter(w, blob, rh)) { drop(view.dropped, "edit-after-receipt"); continue; }
       Object.assign(prev.entry, { submittedAt: dec.submittedAt ?? null, answers: dec.answers ?? [], signature: dec.signature ?? null, edits: prev.entry.edits + 1 });
       if (typeof dec.replyPub === "string" && /^0[23][0-9a-fA-F]{64}$/.test(dec.replyPub)) prev.entry.replyPub = dec.replyPub.toLowerCase();
       continue;
     }
-    const meta = { entry: null, firstWall: Number(blob.hlc?.wall), cid: typeof dec.confirmationId === "string" ? dec.confirmationId : null };
+    const meta = { entry: null, firstWall: w.wall, cid: typeof dec.confirmationId === "string" ? dec.confirmationId : null };
     seen.set(respondent, meta);
     // Answer cap: the first maxResponses (HLC order - identical on every replica) count; unverified
     // answers don't.
@@ -383,6 +409,7 @@ export function creatorView(state, opts) {
     if (typeof dec.replyPub === "string" && /^0[23][0-9a-fA-F]{64}$/.test(dec.replyPub)) entry.replyPub = dec.replyPub.toLowerCase();
     if (f.allowEdits) entry.edits = 0;   // only on forms that allow edits (keeps older vectors stable)
     if (verifyResponse) entry.verified = true;   // ADR 0019 (only with a verifier: keeps the golden vectors stable)
+    timeFields(entry);
     meta.entry = entry;
     view.responses[formId].push(entry);
   }

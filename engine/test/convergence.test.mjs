@@ -247,6 +247,38 @@ function unitChecks() {
   assert.strictEqual(unver.length, 1, "the unsigned one is kept, marked unverified");
   assert.strictEqual(unver[0].answers[0].value, "FAKE");
   assert.deepStrictEqual(vO.dropped.reasons, {}, "nothing dropped");
+
+  // 10c. ADR 0019: with network times, a close compares the time the network stamped the answer,
+  //      not the HLC the sender chose. B backdates its HLC to 150 but was published at 900, after
+  //      the close at 500: dropped. A's HLC is ahead (1200, a fast clock) but the network had it at
+  //      400: counts. An answer with no network time keeps its HLC and is marked timeVerified:false.
+  const mkT = (who, wall, tag) => evResponseSubmit({
+    hlc: { wall, ctr: 0, dev: "d" }, dev: "d",
+    encryptedPayload: toHex(sealToCreator(who, creator.pubHex,
+      JSON.stringify({ formId: "ft", respondent: who.address, submittedAt: wall, answers: [{ questionId: "q", value: tag }], signature: "s" }),
+      { ephPriv: sha("unit-eph|ft|" + tag), deterministic: true })),
+  });
+  const respC = identityFromPriv(sha("unit-resp-c"));
+  const bLate = mkT(respB, 150, "late"), aEarly = mkT(respA, 1200, "early"), cNone = mkT(respC, 300, "none");
+  const closeT = evFormClose({ hlc: { wall: 500, ctr: 0, dev: "d" }, dev: "d", formId: "ft", author: creator.address });
+  const sT = computeState(mergeWhisperbox([mkForm("ft", creator), bLate, aEarly, cNone, closeT]), { identity: creator.address });
+  const nets = { [bLate.id]: 900, [aEarly.id]: 400 };
+  const vT = creatorView(sT, { identity: creator.address, open: openHook(creator), verifyResponse: () => true, netTime: (id) => nets[id] ?? null });
+  assert.deepStrictEqual(vT.responses.ft.map((r) => r.answers[0].value), ["none", "early"], "network-time order; the backdated answer is out");
+  assert.deepStrictEqual(vT.dropped.reasons, { "form-closed": 1 });
+  const early = vT.responses.ft.find((r) => r.answers[0].value === "early"), none = vT.responses.ft.find((r) => r.answers[0].value === "none");
+  assert.strictEqual(early.timeVerified, true); assert.strictEqual(early.receivedAt, 400);
+  assert.strictEqual(none.timeVerified, false); assert.strictEqual(none.receivedAt, null);
+  // without network times: the HLC-only view (the backdated answer gets in, the fast clock is late)
+  const vH = creatorView(sT, { identity: creator.address, open: openHook(creator), verifyResponse: () => true });
+  assert.deepStrictEqual(vH.responses.ft.map((r) => r.answers[0].value), ["late", "none"]);
+  assert.ok(!("timeVerified" in vH.responses.ft[0]), "no time fields without netTime (golden vectors unchanged)");
+  // the signed claim far from the network time is flagged, not enforced (no close here)
+  const sOpen = computeState(mergeWhisperbox([mkForm("ft", creator), cNone]), { identity: creator.address });
+  const vS = creatorView(sOpen, { identity: creator.address, open: openHook(creator), verifyResponse: () => true, netTime: () => 300 + 6 * 60000 });
+  assert.strictEqual(vS.responses.ft[0].timeSkew, true, "claimed 300, network 6 min later: flagged");
+  const vS2 = creatorView(sOpen, { identity: creator.address, open: openHook(creator), verifyResponse: () => true, netTime: () => 300 + 60000 });
+  assert.ok(!vS2.responses.ft[0].timeSkew, "a minute apart: fine");
 }
 
 // ── Id squatting: signed events are deduped by (id, signer) ──────────────────────

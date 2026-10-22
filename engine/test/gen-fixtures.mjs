@@ -145,11 +145,28 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
   const log = []; for (const e of evs) mergeOne(log, e);
   const st = computeState(log, { identity: C.address });
   const openC = (hex) => { try { return JSON.parse(eciesOpen(C, hex).toString("utf8")); } catch { return null; } };
+  // network times for some answers, keyed by (form, claimed submittedAt)
+  const NET = {
+    "life|250": 350,                  // stamped "while closed", the network had it in the re-open: counts
+    "life|350": 420,                  // claimed the re-open, the network had it after the 2nd close: out
+    "capped|170": 100,                // published first: takes a slot ahead of 5 and 6
+    ["editable|" + (1000 + 16 * 60000)]: 1000 + 10 * 60000,   // inside the edit window by network time
+    "dated|550": 480,                 // claimed after the close-at date, the network had it before: counts
+    "shared|9000": 9000 + 6 * 60000,  // the claim 6 min off the network's time: timeSkew (shown, not enforced)
+  };
+  const netTime = {};
+  for (const e of log) if (e.type === "response.submit") {
+    const d = openC(e.payload.encryptedPayload); const k = d && d.formId + "|" + d.submittedAt;
+    if (k in NET) netTime[e.id] = NET[k];
+  }
   writeFileSync(join(here, "fixtures", "golden-lifecycle.json"), fmt({
     creator: C.address, privHex: toHex(C.priv), log, state: st,
     view: creatorView(st, { identity: C.address, open: openC, verifyResponse: (pseudo) => verifyInner(pseudo.payload) }),
     coOwner: CO.address,
     // the co-owner's view (it holds the form key - here the creator's, as in this vector)
     coView: creatorView(computeState(log, { identity: CO.address }), { identity: CO.address, open: openC, verifyResponse: (pseudo) => verifyInner(pseudo.payload), alsoForms: ["shared"] }),
+    // ADR 0019: the same log judged by the network's time (event id -> earliest Delivery timestamp,
+    // ms). Answers not listed have none: their HLC applies and they're marked timeVerified:false.
+    netTime, netView: creatorView(st, { identity: C.address, open: openC, verifyResponse: (pseudo) => verifyInner(pseudo.payload), netTime: (id) => netTime[id] ?? null }),
   }));
 }

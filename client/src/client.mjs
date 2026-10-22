@@ -80,6 +80,15 @@ export function parseLink(input) {
 // ── Shape validation, the same rules as whisperbox_core's wellFormedEvent (review 2026-10-22) ──
 // Untrusted JSON from the topic: anything that fails is dropped before it can be merged or folded,
 // so the phone and the desktop keep the same event set under hostile input.
+/** The network time (ms) of a received message from loam-transport's meta, or 0: ts is in ns,
+ *  tsMs its ms; none, nonsense or further ahead of our clock than an HLC may be = 0. */
+export function netMsOf(meta, now) {
+  if (!meta || typeof meta !== "object") return 0;
+  let t = Number(meta.tsMs);
+  if (!(t > 0)) { const ns = Number(meta.ts); t = ns > 1e15 ? Math.floor(ns / 1e6) : 0; }
+  if (!(t > 1e12) || t > now + MAX_CLOCK_LEAD_MS) return 0;
+  return Math.floor(t);
+}
 export const MAX_CLOCK_LEAD_MS = 5 * 60 * 1000;
 const isStr = (o, k, max = 4096, req = true) => (!(k in o) ? !req : typeof o[k] === "string" && o[k].length <= max && (!req || o[k].length > 0));
 const optStr = (o, k, max = 65536) => !(k in o) || o[k] === null || (typeof o[k] === "string" && o[k].length <= max);
@@ -170,6 +179,9 @@ export class WhisperboxClient {
     const dr = parse(await this.store.get("wb-drafts"), {});
     this.drafts = dr.forms || {}; this.answerDrafts = dr.answers || {}; this.autoReceipts = new Set(dr.autoReceipts || []);
     this.seen = parse(await this.store.get("wb-seen"), {});
+    // answer event id -> the earliest Logos Delivery timestamp (ms) this device saw for it (ADR 0019)
+    const nt = parse(await this.store.get("wb-nettime"), {});
+    this.netTimes = nt && typeof nt === "object" && !Array.isArray(nt) ? nt : {};
     // Form keys that came from a Keycard (not derivable from the identity): one secret per
     // form ("wb-fk-<formId>"), with the list of ids (not secret) in the plain store.
     this.cardKeys = new Map();
@@ -238,11 +250,12 @@ export class WhisperboxClient {
   }
 
   /** Feed every decode candidate of ONE received message (loam-transport hands these
-   *  over). Returns true when one of them was a WhisperBox envelope. */
-  ingest(candidates) {
+   *  over). Returns true when one of them was a WhisperBox envelope. meta (loam-transport
+   *  with network timestamps) = {ts (ns), tsMs, source, bearer}; ts 0 = the bearer has none. */
+  ingest(candidates, meta) {
     // Never throw: this runs inside native event callbacks, where an escaping exception
     // would take the app down. A bad message is counted and skipped.
-    try { return this._ingest(candidates); }
+    try { this._rxNetMs = netMsOf(meta, this.now()); return this._ingest(candidates); }
     catch (e) { this.diag.rxErr = (this.diag.rxErr || 0) + 1; this.lastError = String(e?.message || e); return false; }
   }
   _ingest(candidates) {
@@ -282,11 +295,25 @@ export class WhisperboxClient {
       if (!wellFormedEvent(e)) { this.diag.admDropType++; return true; }
       if (e.hlc.wall > this.now() + MAX_CLOCK_LEAD_MS) { this.diag.admDropFuture = (this.diag.admDropFuture || 0) + 1; return true; }   // WB-3
       if (!this.admit(e)) return true;
+      const earlier = this.noteNetTime(e);
       if (mergeOne(this.log, e)) { this.diag.rxNew++; this.clock.receive(e.hlc); this.saveLog(); this.emit(); }
-      else this.diag.rxDup++;
+      else { this.diag.rxDup++; if (earlier) this.emit(); }
       return true;
     }
     return false;
+  }
+  // ADR 0019: keep the earliest network time per answer. A copy re-served during catch-up is
+  // published again (a later time) and a store copy keeps the original, so the earliest is the
+  // closest to when the respondent sent it. Returns true when it moved earlier.
+  noteNetTime(e) {
+    const t = this._rxNetMs;
+    if (!t || e.type !== EventType.RESPONSE_SUBMIT) return false;
+    const prev = this.netTimes[e.id];
+    if (prev && prev <= t) return false;
+    this.netTimes[e.id] = t;
+    this.store.set("wb-nettime", JSON.stringify(this.netTimes)).catch?.(() => {});
+    this.diag.netTs = (this.diag.netTs || 0) + 1;
+    return true;
   }
   // Admission gates (mirror WhisperboxCoreImpl::admitEvent).
   admit(e) {
@@ -709,6 +736,7 @@ export class WhisperboxClient {
       open: (hex) => this.openWith(keys, st, hex),
       alsoForms: this.coOwnedIds(st),
       verifyResponse: (pseudo) => C.verifyInner(pseudo.payload),
+      netTime: (id) => this.netTimes?.[id] ?? null,
     });
   }
   snapshot() {

@@ -319,14 +319,28 @@ export function creatorView(state, opts) {
     // Close-at date (expiresAt, ms): answers stamped after it don't count.
     if (f.expiresAt != null && Number(blob.hlc?.wall) > Number(f.expiresAt)) { drop(view.dropped, "expired"); continue; }
 
-    // Inner signature: members-only forms, and forms that allow edits (an unsigned
-    // "edit" could overwrite someone else's answer).
-    if ((f.whitelist?.type !== "none" || f.allowEdits) && verifyResponse) {
-      const pseudo = {
-        v: 1, id: blob.id, type: EventType.RESPONSE_SUBMIT, hlc: blob.hlc, dev: "",
-        payload: dec, pub: dec.pub ?? null, sig: dec.signature ?? null,
-      };
-      if (!verifyResponse(pseudo)) { drop(view.dropped, "sig-invalid"); continue; }
+    // Inner signature (ADR 0019): every answer from 0.5.0 is signed by the respondent it names.
+    // A bad signature is dropped. An unsigned answer must not count: on members-only and editable
+    // forms it is dropped (as before); on an open form it is listed as unverified (a pre-0.5.0
+    // client, or someone claiming another respondent's address) and never takes part in the
+    // one-per-respondent check, the cap or edits.
+    if (verifyResponse) {
+      const signed = typeof dec.signature === "string" && dec.signature !== "";   // the verifier checks pub + signer
+      if (signed) {
+        const pseudo = {
+          v: 1, id: blob.id, type: EventType.RESPONSE_SUBMIT, hlc: blob.hlc, dev: "",
+          payload: dec, pub: dec.pub ?? null, sig: dec.signature,
+        };
+        if (!verifyResponse(pseudo)) { drop(view.dropped, "sig-invalid"); continue; }
+      } else if (f.whitelist?.type !== "none" || f.allowEdits) { drop(view.dropped, "sig-invalid"); continue; }
+      else {
+        // still the creator's to read and export (answers from older clients are unsigned), but it
+        // proves nothing: it doesn't take a respondent's slot, count towards the cap or edit anything
+        view.responses[formId].push({ respondent: lc(typeof dec.respondent === "string" ? dec.respondent : ""), submittedAt: dec.submittedAt ?? null,
+          answers: Array.isArray(dec.answers) ? dec.answers : [], signature: null,
+          confirmationId: typeof dec.confirmationId === "string" ? dec.confirmationId : null, hlc: blob.hlc, verified: false });
+        continue;
+      }
     }
 
     const respondent = lc(dec.respondent ?? "");
@@ -352,8 +366,9 @@ export function creatorView(state, opts) {
     }
     const meta = { entry: null, firstWall: Number(blob.hlc?.wall), cid: typeof dec.confirmationId === "string" ? dec.confirmationId : null };
     seen.set(respondent, meta);
-    // Answer cap: the first maxResponses (HLC order - identical on every replica) count.
-    if (f.maxResponses && view.responses[formId].length >= f.maxResponses) { drop(view.dropped, "over-limit"); continue; }
+    // Answer cap: the first maxResponses (HLC order - identical on every replica) count; unverified
+    // answers don't.
+    if (f.maxResponses && view.responses[formId].filter((r) => r.verified !== false).length >= f.maxResponses) { drop(view.dropped, "over-limit"); continue; }
 
     const entry = {
       respondent,
@@ -367,6 +382,7 @@ export function creatorView(state, opts) {
     };
     if (typeof dec.replyPub === "string" && /^0[23][0-9a-fA-F]{64}$/.test(dec.replyPub)) entry.replyPub = dec.replyPub.toLowerCase();
     if (f.allowEdits) entry.edits = 0;   // only on forms that allow edits (keeps older vectors stable)
+    if (verifyResponse) entry.verified = true;   // ADR 0019 (only with a verifier: keeps the golden vectors stable)
     meta.entry = entry;
     view.responses[formId].push(entry);
   }

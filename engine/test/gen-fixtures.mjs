@@ -70,9 +70,18 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
   const at = (wall) => ({ hlc: { wall, ctr: 0, dev: "d" }, dev: "d" });
   const form = (id, extra) => sign(evFormPublish({ ...at(100), form: { id, title: id, description: "", creator: C.address, publicKey: C.pubHex,
     createdAt: 100, questions: [{ id: "q1", type: "boolean", text: "ok?", required: true }], whitelist: { type: "none", value: "" }, signature: null, ...extra } }));
-  const resp = (fid, who, wall) => {
-    const pt = JSON.stringify({ formId: fid, respondent: who, submittedAt: wall, answers: [{ questionId: "q1", value: wall % 2 === 0 }], signature: null, pub: null, confirmationId: "c-" + fid + "-" + wall });
+  // ADR 0019: answers are signed by the respondent they name (deterministic identities per index)
+  const ri = (i) => identityFromPriv(sh("life-respondent-" + i));
+  const resp = (fid, i, wall) => {
+    const who = ri(i);
+    const r = { formId: fid, respondent: who.address, submittedAt: wall, answers: [{ questionId: "q1", value: wall % 2 === 0 }] };
+    const pt = JSON.stringify({ ...r, signature: signInner(who, r), pub: who.pubHex, confirmationId: "c-" + fid + "-" + wall });
     return evResponseSubmit({ ...at(wall), encryptedPayload: toHex(sealToCreator(null, C.pubHex, pt, { ephPriv: sh("eph" + fid + wall), deterministic: true })) });
+  };
+  // an unsigned answer (a pre-0.5.0 client, or someone claiming another respondent's address)
+  const unsignedResp = (fid, respondent, wall) => {
+    const pt = JSON.stringify({ formId: fid, respondent, submittedAt: wall, answers: [{ questionId: "q1", value: wall % 2 === 0 }], signature: null, pub: null, confirmationId: "c-" + fid + "-" + wall });
+    return evResponseSubmit({ ...at(wall), encryptedPayload: toHex(sealToCreator(null, C.pubHex, pt, { ephPriv: sh("eph-u" + fid + wall), deterministic: true })) });
   };
   const addr = (i) => "0x" + String(i).padStart(40, "0");
   const CO = identityFromPriv(sh("co-owner"));
@@ -88,15 +97,16 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
   };
   const evs = [
     form("life"), form("capped", { maxResponses: 2, showResponseCount: true }), form("dated", { expiresAt: 500 }),
-    resp("life", addr(1), 150),                                                            // open: counts
+    resp("life", 1, 150),                                                            // open: counts
     sign(evFormClose({ ...at(200), formId: "life", author: C.address, nonce: "n1" })),
-    resp("life", addr(2), 250),                                                            // closed: dropped
+    resp("life", 2, 250),                                                            // closed: dropped
     sign(evFormReopen({ ...at(300), formId: "life", author: C.address, nonce: "n2" })),
-    resp("life", addr(3), 350),                                                            // re-opened: counts
+    resp("life", 3, 350),                                                            // re-opened: counts
     sign(evFormClose({ ...at(400), formId: "life", author: C.address, nonce: "n3" })),
-    resp("life", addr(4), 450),                                                            // closed again: dropped
-    resp("capped", addr(5), 150), resp("capped", addr(6), 160), resp("capped", addr(7), 170),   // 3rd: over-limit
-    resp("dated", addr(8), 450), resp("dated", addr(9), 550),                              // 2nd: after expiresAt
+    resp("life", 4, 450),                                                            // closed again: dropped
+    unsignedResp("capped", ri(5).address, 140),                     // forged in 5's name, earlier: unverified, takes no slot
+    resp("capped", 5, 150), resp("capped", 6, 160), resp("capped", 7, 170),   // 3rd: over-limit
+    resp("dated", 8, 450), resp("dated", 9, 550),                              // 2nd: after expiresAt
     sign(evResponseConfirm({ ...at(600), formId: "capped", confirmationId: "c-capped-150", author: C.address })),
     sign(evResponseConfirmBatch({ ...at(610), formId: "life", confirmationIds: ["c-life-150", "c-life-350"], author: C.address })),
     // ── answer edits: 15-minute window, locked by a receipt, signed by the respondent ──
@@ -107,7 +117,7 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
     signedResp("editable", R2, 2000, true, "c-r2"),
     sign(evResponseConfirm({ ...at(3000), formId: "editable", confirmationId: "c-r2", author: C.address })),
     signedResp("editable", R2, 4000, false, "c-r2"),                 // after the receipt: edit-after-receipt
-    resp("editable", addr(3), 4500),                                  // unsigned: sig-invalid
+    unsignedResp("editable", addr(3), 4500),                          // unsigned: sig-invalid
     signedResp("editable", R5, 5000, true, "c-r5"),
     forgedResp("editable", R5, R4, 6000, false),                      // R4 signs an "edit" of R5's answer: sig-invalid
     // ── edit after publishing: the latest update wins; only the creator may update ──
@@ -121,12 +131,13 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
       thankYou: "thanks!" } })),
     // ── co-owners: may send receipts; may NOT close; their view includes the co-owned form ──
     form("shared"),
-    resp("shared", addr(11), 9000),
+    resp("shared", 11, 9000),
     sign(evFormCoOwner({ ...at(9100), formId: "shared", author: C.address, owner: CO.address, sealedKey: "01" + "ab".repeat(70) })),
     { ...evResponseConfirm({ ...at(9200), formId: "shared", confirmationId: "c-shared-9000", author: CO.address }), ...signEvent(CO, evResponseConfirm({ ...at(9200), formId: "shared", confirmationId: "c-shared-9000", author: CO.address })) },
     { ...evFormClose({ ...at(9300), formId: "shared", author: CO.address, nonce: "co" }), ...signEvent(CO, evFormClose({ ...at(9300), formId: "shared", author: CO.address, nonce: "co" })) },
     // ── private replies: creator + co-owner may reply; anyone else is dropped ──
-    sealResp("shared", { formId: "shared", respondent: addr(12), submittedAt: 9400, answers: [{ questionId: "q1", value: true }], signature: null, pub: null, confirmationId: "c-reply", replyPub: R1.pubHex }, 9400),
+    (() => { const w = ri(12), r = { formId: "shared", respondent: w.address, submittedAt: 9400, answers: [{ questionId: "q1", value: true }] };
+      return sealResp("shared", { ...r, signature: signInner(w, r), pub: w.pubHex, confirmationId: "c-reply", replyPub: R1.pubHex }, 9400); })(),
     sign(evResponseReply({ ...at(9500), formId: "shared", author: C.address, to: "c-reply", sealed: "01" + "cd".repeat(70), nonce: "r1" })),
     { ...evResponseReply({ ...at(9600), formId: "shared", author: CO.address, to: "c-reply", sealed: "01" + "ef".repeat(70), nonce: "r2" }), ...signEvent(CO, evResponseReply({ ...at(9600), formId: "shared", author: CO.address, to: "c-reply", sealed: "01" + "ef".repeat(70), nonce: "r2" })) },
     { ...evResponseReply({ ...at(9700), formId: "shared", author: R4.address, to: "c-reply", sealed: "01" + "aa".repeat(70), nonce: "r3" }), ...signEvent(R4, evResponseReply({ ...at(9700), formId: "shared", author: R4.address, to: "c-reply", sealed: "01" + "aa".repeat(70), nonce: "r3" })) },

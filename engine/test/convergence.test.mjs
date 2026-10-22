@@ -228,6 +228,25 @@ function unitChecks() {
   assert.strictEqual(v10.responses.fw2[0].respondent, respA.address);
   assert.strictEqual(v10.responses.fw2[0].confirmationId, "cid-a", "sealed confirmationId surfaces");
   assert.deepStrictEqual(v10.dropped.reasons, { "not-whitelisted": 1 });
+
+  // 10b. ADR 0019 / review WB-2: on an OPEN form an unsigned answer claiming someone's address,
+  //      stamped earlier, used to win and drop their real answer. Now it is listed as unverified
+  //      and the signed answer counts.
+  const pubO = mkForm("fo", creator, { type: "none", value: "" });
+  const mkOpen = (who, wall, sig) => evResponseSubmit({
+    hlc: { wall, ctr: 0, dev: "d" }, dev: "d",
+    encryptedPayload: toHex(sealToCreator(who, creator.pubHex,
+      JSON.stringify({ formId: "fo", respondent: respA.address, submittedAt: null, answers: [{ questionId: "q", value: sig ? "real" : "FAKE" }], signature: sig }),
+      { ephPriv: sha("unit-eph|fo|" + wall), deterministic: true })),
+  });
+  const sO = computeState(mergeWhisperbox([pubO, mkOpen(respB, 100, null), mkOpen(respA, 200, "s")]), { identity: creator.address });
+  const vO = creatorView(sO, { identity: creator.address, open: openHook(creator), verifyResponse: (p) => p.payload.signature != null });
+  const ver = vO.responses.fo.filter((r) => r.verified), unver = vO.responses.fo.filter((r) => r.verified === false);
+  assert.strictEqual(ver.length, 1, "the signed answer counts");
+  assert.strictEqual(ver[0].answers[0].value, "real", "...not the earlier unsigned one claiming the same address");
+  assert.strictEqual(unver.length, 1, "the unsigned one is kept, marked unverified");
+  assert.strictEqual(unver[0].answers[0].value, "FAKE");
+  assert.deepStrictEqual(vO.dropped.reasons, {}, "nothing dropped");
 }
 
 // ── Id squatting: signed events are deduped by (id, signer) ──────────────────────

@@ -520,9 +520,9 @@ export class WhisperboxClient {
     // anonymous form: answer as the per-form identity (no link to my address / other forms)
     const me = f.anonymous ? C.deriveAnonIdentity(this.identity, formId) : this.identity;
     const resp = { formId, respondent: me.address, submittedAt, answers };
-    const inner = wl !== "none" || f.allowEdits   // editable forms are signed: nobody can "edit" someone else's answer
-      ? { signature: C.signInner(me, resp), pub: me.pubHex }
-      : { signature: null, pub: null };
+    // Every answer is signed by the respondent it names (ADR 0019): nobody can answer in someone
+    // else's name or replace their answer. Inside the sealed payload, so the wire names nobody.
+    const inner = { signature: C.signInner(me, resp), pub: me.pubHex };
     // one-off key for private replies / quiz scores to this answer (re-derivable, unlinkable)
     const replyPub = C.deriveReplyKey(this.identity, formId, confirmationId).pubHex;
     const sealed = C.toHex(C.sealToCreator(null, f.publicKey, JSON.stringify({ ...resp, ...inner, confirmationId, replyPub })));

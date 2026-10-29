@@ -10,7 +10,7 @@
 //   signing, ECIES), engine/engine.mjs (fold + creator view), and loam-sync's RBSR
 //   catch-up (fp/ids/need) over event keys.
 import { mergeOne, mergeWhisperbox, eventKey } from "../../contract/src/merge.mjs";
-import { Clock } from "../../contract/src/hlc.mjs";
+import { Clock, MAX_HLC_CTR } from "../../contract/src/hlc.mjs";
 import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId, formReopenId, formUpdateId, formCoOwnerId, responseConfirmBatchId, responseReplyId } from "../../contract/src/events.mjs";
 import * as C from "../../contract/src/crypto-portable.mjs";
 import { validateAnswers, emptyAnswer as emptyAnswerOf, scoreAnswers } from "../../contract/src/answers.mjs";
@@ -106,15 +106,33 @@ export const wellFormedFormFields = (f) => isObj(f)
   && optNum(f, "expiresAt") && optNum(f, "maxResponses") && optNum(f, "editWindowMinutes") && optNum(f, "createdAt")
   && ["showResponseCount", "shuffleQuestions", "anonymous", "allowEdits"].every((b) => optBool(f, b))
   && (!("whitelist" in f) || f.whitelist === null || (isObj(f.whitelist) && optStr(f.whitelist, "type", 32) && optStr(f.whitelist, "value", 1 << 20)));
+/** One event, serialized (open-review FR-6; Logos Delivery carries ~150 KB). Same as the C++ core. */
+export const MAX_EVENT_BYTES = 256 * 1024;
+/** A decoded frame, and how deep its JSON may nest (open-review FR-1). */
+export const MAX_FRAME_BYTES = 1 << 20;
+export const MAX_JSON_DEPTH = 32;
+/** true when the JSON text nests deeper than max (counted outside strings, without parsing). */
+export function jsonTooDeep(text, max) {
+  let d = 0, inStr = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (inStr) { if (c === 92) i++; else if (c === 34) inStr = false; continue; }
+    if (c === 34) inStr = true;
+    else if (c === 91 || c === 123) { if (++d > max) return true; }
+    else if (c === 93 || c === 125) d--;
+  }
+  return false;
+}
 export function wellFormedEvent(e) {
   if (!isObj(e) || !isStr(e, "id", 512) || !isStr(e, "type", 64)) return false;
+  try { if (JSON.stringify(e).length > MAX_EVENT_BYTES) return false; } catch { return false; }
   if ("v" in e && !Number.isInteger(e.v)) return false;
   if (!optStr(e, "dev", 256) || !optStr(e, "pub", 256) || !optStr(e, "sig", 512)) return false;
   const h = e.hlc;
-  if (!isObj(h) || !isInt(h.wall) || !isInt(h.ctr) || !optStr(h, "dev", 256)) return false;
+  if (!isObj(h) || !isInt(h.wall) || h.wall < 0 || !isInt(h.ctr) || h.ctr < 0 || h.ctr > MAX_HLC_CTR || !optStr(h, "dev", 256)) return false;
   const p = e.payload;
   if (!isObj(p)) return false;
-  if (e.type === EventType.RESPONSE_SUBMIT) return isStr(p, "encryptedPayload", 4 << 20) && e.id === responseSubmitId(p.encryptedPayload);
+  if (e.type === EventType.RESPONSE_SUBMIT) return isStr(p, "encryptedPayload", MAX_EVENT_BYTES) && e.id === responseSubmitId(p.encryptedPayload);
   if (e.type === EventType.FORM_PUBLISH) return isStr(p, "id", 128) && isStr(p, "creator", 64) && optStr(p, "publicKey", 256) && wellFormedFormFields(p) && e.id === formPublishId(p.id);
   if (!isStr(p, "formId", 128) || !isStr(p, "author", 64)) return false;
   if (e.type === EventType.RESPONSE_CONFIRM) {
@@ -166,9 +184,13 @@ export class WhisperboxClient {
     this.clock = new Clock(dev);
     const parse = (s, d) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
     // Same repair as the core: drop unsigned form.publish placeholders, re-sort.
-    const raw = parse(await this.store.get("wb-log"), []);
-    // wellFormedEvent also skips a peer's malformed event saved by an older version (review 2026-10-22)
-    this.log = mergeWhisperbox((Array.isArray(raw) ? raw : []).filter((e) => wellFormedEvent(e) && !(e.type === EventType.FORM_PUBLISH && !e.sig)));
+    const rawText = await this.store.get("wb-log");
+    const raw = rawText && jsonTooDeep(String(rawText), MAX_JSON_DEPTH + 2) ? [] : parse(rawText, []);
+    // wellFormedEvent also skips a peer's malformed event saved by an older version (review 2026-10-22).
+    // Signed event types are verified again: admission did, but a stored log could carry an unsigned
+    // close, update or co-owner grant (open-review FR-7).
+    const signedType = (t) => [EventType.FORM_PUBLISH, EventType.RESPONSE_CONFIRM, EventType.FORM_CLOSE, EventType.FORM_REOPEN, EventType.FORM_UPDATE, EventType.FORM_COOWNER, EventType.RESPONSE_REPLY].includes(t);
+    this.log = mergeWhisperbox((Array.isArray(raw) ? raw : []).filter((e) => wellFormedEvent(e) && (!signedType(e.type) || (e.sig && C.verifyEvent(e)))));
     const lead = this.now() + MAX_CLOCK_LEAD_MS;
     for (const e of this.log) if (e.hlc.wall <= lead) this.clock.receive(e.hlc);   // never adopt a far-future clock
     this.watched = new Set(parse(await this.store.get("wb-watched"), []));
@@ -223,10 +245,10 @@ export class WhisperboxClient {
     const cv = this.decrypt(st);
     for (const f of mine) {
       if (this.isCoOwner(f)) {   // co-owned: automatic receipts only (closing stays the creator's)
-        if (this.autoReceipts.has(f.id) && (cv.responses[f.id] || []).some((r) => !(f.confirmations || []).includes(confirmIdOf(r, f.id)))) this.confirmAll(f.id);
+        if (this.autoReceipts.has(f.id) && (cv.responses[f.id] || []).some((r) => r.verified !== false && !(f.confirmations || []).includes(confirmIdOf(r, f.id)))) this.confirmAll(f.id);
         continue;
       }
-      const got = (cv.responses[f.id] || []);
+      const got = (cv.responses[f.id] || []).filter((r) => r.verified !== false);   // a flood of unsigned answers can't close the form
       if (f.status === "open" && ((f.maxResponses && got.length >= f.maxResponses) || (f.expiresAt != null && this.now() > f.expiresAt))) this.closeForm(f.id);
       if (this.autoReceipts.has(f.id) && got.some((r) => !(f.confirmations || []).includes(confirmIdOf(r, f.id)))) this.confirmAll(f.id);
     }
@@ -263,8 +285,10 @@ export class WhisperboxClient {
     for (const cand of candidates || []) {
       let text;
       try { text = C.utf8Decode(cand).trim(); } catch { continue; }
+      if (text.length > MAX_FRAME_BYTES * 2) { this.diag.rxBad = (this.diag.rxBad || 0) + 1; continue; }
       for (const t of [text, (() => { try { return C.utf8Decode(b64decode(text)).trim(); } catch { return ""; } })()]) {
         if (!t || t[0] !== "{") continue;
+        if (t.length > MAX_FRAME_BYTES || jsonTooDeep(t, MAX_JSON_DEPTH)) { this.diag.rxBad = (this.diag.rxBad || 0) + 1; continue; }
         let env; try { env = JSON.parse(t); } catch { continue; }
         if (this.handle(env)) return true;
       }
@@ -278,7 +302,13 @@ export class WhisperboxClient {
       const byKey = new Map(this.log.map((e) => [eventKey(e), e]));
       const step = respond([...byKey.keys()].map((id) => ({ id })), env, this.deviceId);
       for (const r of step.replies) this.sendEnvelope(r);
-      for (const s of step.serve) { const e = byKey.get(s.id); if (e) this.broadcast(e); }
+      let n = 0;
+      for (const s of step.serve) {
+        const e = byKey.get(s.id);
+        if (!e) continue;
+        if (n >= 100) { this.diag.serveSkipped = (this.diag.serveSkipped || 0) + 1; continue; }   // the rest on the next round
+        if (this.serve(e)) n++;
+      }
       this.diag.rbsrRx++;
       return true;
     }
@@ -286,7 +316,7 @@ export class WhisperboxClient {
       if (env.rbsr) return true; // RBSR peers reconcile the exact delta instead
       if (env.from !== this.deviceId && this.now() - this.lastReserveAt >= 3000) {
         this.lastReserveAt = this.now(); this.diag.legacyReseeds++;
-        for (const e of this.log) this.broadcast(e);
+        for (const e of this.log) this.serve(e);
       }
       return true;
     }
@@ -315,10 +345,28 @@ export class WhisperboxClient {
     this.diag.netTs = (this.diag.netTs || 0) + 1;
     return true;
   }
+  // Send an event for a peer that lacks it (mirror WhisperboxCoreImpl::serveEvent): an event served in
+  // the last 2 s isn't sent again, and at most 300 a minute. A 40-byte "ids" frame used to make the
+  // node re-broadcast its whole log every time (open-review FR-3).
+  serve(e) {
+    const now = this.now(), key = eventKey(e);
+    if (!this._served) { this._served = new Map(); this._serveTokens = 300; this._serveAt = now; }
+    const last = this._served.get(key);
+    if (last !== undefined && now - last < 2000) { this.diag.serveSkipped = (this.diag.serveSkipped || 0) + 1; return false; }
+    this._serveTokens = Math.min(300, this._serveTokens + ((now - this._serveAt) * 300) / 60000);
+    this._serveAt = now;
+    if (this._serveTokens < 1) { this.diag.serveSkipped = (this.diag.serveSkipped || 0) + 1; return false; }
+    this._serveTokens -= 1;
+    this._served.set(key, now);
+    this.broadcast(e);
+    return true;
+  }
   // Admission gates (mirror WhisperboxCoreImpl::admitEvent).
   admit(e) {
     if (e.type === EventType.FORM_PUBLISH || e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.FORM_CLOSE || e.type === EventType.FORM_REOPEN || e.type === EventType.FORM_UPDATE || e.type === EventType.FORM_COOWNER || e.type === EventType.RESPONSE_REPLY) {
       if (!C.verifyEvent(e)) { this.diag.admDropSig++; return false; }
+      // the key answers are sealed to must be a curve point (open-review FR-4)
+      if (e.type === EventType.FORM_PUBLISH && e.payload.publicKey && !C.validPubPoint(e.payload.publicKey)) { this.diag.admDropType++; return false; }
       return true;
     }
     if (e.type === EventType.RESPONSE_SUBMIT) {
@@ -475,7 +523,7 @@ export class WhisperboxClient {
     if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
     if (f.status === "open") return { ok: false, error: "form is already open" };
     if (f.expiresAt != null && this.now() > f.expiresAt) return { ok: false, error: "its end date has passed - duplicate it as a new form" };
-    if (f.maxResponses && (this.decrypt(this.state()).responses[formId] || []).length >= f.maxResponses) return { ok: false, error: "it reached its answer limit - duplicate it as a new form" };
+    if (f.maxResponses && (this.decrypt(this.state()).responses[formId] || []).filter((r) => r.verified !== false).length >= f.maxResponses) return { ok: false, error: "it reached its answer limit - duplicate it as a new form" };
     this.adopt(this.buildEvent(EventType.FORM_REOPEN, formReopenId(formId, C.randomHex(6)), { formId, author: this.identity.address }, true));
     return { ok: true };
   }
@@ -486,7 +534,8 @@ export class WhisperboxClient {
     const f = st.forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
     if (f.creator !== this.identity.address && !this.isCoOwner(f)) return { ok: false, error: "not the creator or a co-owner" };
-    const todo = (this.decrypt(st).responses[formId] || []).map((r) => confirmIdOf(r, formId)).filter((c) => c && !(f.confirmations || []).includes(c));
+    // an unverified answer proves nothing: no automatic receipt for it (open-review FR-5)
+    const todo = (this.decrypt(st).responses[formId] || []).filter((r) => r.verified !== false).map((r) => confirmIdOf(r, formId)).filter((c) => c && !(f.confirmations || []).includes(c));
     let events = 0;
     for (let i = 0; i < todo.length; i += 100) {
       const ids = todo.slice(i, i + 100);
@@ -805,11 +854,13 @@ export class WhisperboxClient {
     const iso = (ms) => (ms > 0 ? new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z") : "");
     const qs = f.questions || [];
     const quiz = this.quizOf(f, this.formKeys(st));
-    const rows = [["respondent", "submittedAt", "confirmed", ...(quiz ? ["score"] : []), ...qs.map((q) => q.text || q.id)]];
+    // verified: signed by the respondent it names; timeVerified: the network's time (open-review FR-5)
+    const yn = (v) => (typeof v === "boolean" ? (v ? "yes" : "no") : "");
+    const rows = [["respondent", "verified", "submittedAt", "timeVerified", "confirmed", ...(quiz ? ["score"] : []), ...qs.map((q) => q.text || q.id)]];
     for (const r of this.decrypt(st).responses[formId] || []) {
       const byQ = new Map((r.answers || []).map((a) => [a.questionId, a.value]));
       const sc = quiz ? scoreAnswers(qs, quiz, r.answers) : null;
-      rows.push([r.respondent, iso(r.submittedAt || 0), (f.confirmations || []).includes(confirmIdOf(r, formId)) ? "yes" : "no",
+      rows.push([r.respondent, yn(r.verified), iso(r.submittedAt || 0), yn(r.timeVerified), (f.confirmations || []).includes(confirmIdOf(r, formId)) ? "yes" : "no",
         ...(sc ? [`${sc.score}/${sc.outOf}`] : []),
         ...qs.map((q) => (byQ.has(q.id) ? val(q, byQ.get(q.id)) : ""))]);
     }

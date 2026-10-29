@@ -15,6 +15,10 @@ export function compareHlc(a, b) {
 
 /** Stamps local events and advances past ingested ones. Prime it from your whole
  *  log on load, and call receive() for every event you ingest (loam-sync ADR 0002). */
+// An HLC counter only counts events stamped in one millisecond; a peer's huge ctr used to be adopted
+// and carried into every later local stamp (open-review FR-2). Same bound as the C++ engine.
+export const MAX_HLC_CTR = 2 ** 30;
+
 export class Clock {
   constructor(dev) {
     this.dev = dev;
@@ -25,12 +29,16 @@ export class Clock {
     if (nowMs > this.wall) {
       this.wall = nowMs;
       this.ctr = 0;
+    } else if (this.ctr >= MAX_HLC_CTR) {
+      this.wall += 1;   // carry into the next millisecond
+      this.ctr = 0;
     } else {
       this.ctr += 1;
     }
     return { wall: this.wall, ctr: this.ctr, dev: this.dev };
   }
   receive(h) {
+    if (!h || !Number.isInteger(h.ctr) || h.ctr < 0 || h.ctr > MAX_HLC_CTR) return;
     if (h.wall > this.wall) {
       this.wall = h.wall;
       this.ctr = h.ctr;

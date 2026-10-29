@@ -4,6 +4,7 @@
 import test from "node:test";
 import assert from "node:assert";
 import { WhisperboxClient, parseLink, MAX_CLOCK_LEAD_MS } from "../src/client.mjs";
+import { MAX_HLC_CTR } from "../../contract/src/hlc.mjs";
 import * as C from "../../contract/src/crypto-portable.mjs";
 import { responseSubmitId } from "../../contract/src/events.mjs";
 
@@ -73,4 +74,62 @@ test("answer tags are random, links that can't be valid are refused", async () =
   assert.strictEqual(parseLink("whisperbox://form?id=../../etc&by=0xnothex"), null, "bad id and creator");
   assert.strictEqual(parseLink("../../etc"), null, "bare id that can't be one");
   assert.deepStrictEqual(parseLink("whisperbox://form?id=form-ab12&by=0x" + "a".repeat(40)), { formId: "form-ab12", by: "0x" + "a".repeat(40) });
+});
+
+// open-review 2026-10-29: the same vectors as the C++ e2e block
+test("deep JSON, huge HLC counters, off-curve form keys are refused; the clock stays valid", async () => {
+  const store = mem();
+  const a = new WhisperboxClient({ store, send: async () => {} });
+  await a.init(); a.onConnected();
+  const before = a.log.length;
+  // FR-1: 50,000 nested arrays
+  const deep = "[".repeat(50000) + "]".repeat(50000);
+  a.ingest([bytes(`{"v":1,"type":"EVENT","event":{"v":1,"id":"close:x:n","type":"form.close","hlc":{"wall":1,"ctr":0,"dev":"x"},"dev":"x","payload":{"formId":"x","author":"0x0","x":${deep}}}}`)]);
+  assert.ok((a.diag.rxBad || 0) >= 1, "the deep frame is refused before parsing");
+  // FR-2: a counter far past the bound
+  const sealed = "01" + "a".repeat(140);
+  const big = { v: 1, id: responseSubmitId(sealed), type: "response.submit", hlc: { wall: Date.now() + 60000, ctr: Number.MAX_SAFE_INTEGER, dev: "x" }, dev: "x", payload: { encryptedPayload: sealed } };
+  a.ingest([bytes(JSON.stringify({ v: 1, type: "EVENT", event: big }))]);
+  assert.strictEqual(a.log.length, before, "nothing merged");
+  const f = a.createForm({ title: "after", questions: [{ id: "q1", type: "text", text: "?" }] });
+  const own = a.log.find((e) => e.id === "form:" + f.formId);
+  assert.ok(own.hlc.ctr >= 0 && own.hlc.ctr <= MAX_HLC_CTR, "the next local stamp has a valid counter");
+  // FR-4: a signed form whose publicKey isn't a point
+  const x = C.identityFromPriv(C.sha256Hex ? C.sha256Hex("fr4") : "11".repeat(32));
+  const payload = { id: "fr4-badkey", creator: x.address, publicKey: "02" + "0".repeat(64), title: "bad", questions: [], whitelist: { type: "none", value: "" }, createdAt: 1 };
+  const fe = { v: 1, id: "form:fr4-badkey", type: "form.publish", hlc: { wall: Date.now(), ctr: 0, dev: "x" }, dev: "x", payload };
+  Object.assign(fe, C.signEvent(x, fe));
+  a.ingest([bytes(JSON.stringify({ v: 1, type: "EVENT", event: fe }))]);
+  assert.ok(!a.snapshot().state.forms["fr4-badkey"], "an off-curve form key is refused");
+  assert.strictEqual(C.validPubPoint("02" + "0".repeat(64)), false);
+  assert.strictEqual(C.validPubPoint(x.pubHex), true);
+});
+
+test("an empty ids frame, repeated, serves each event once (FR-3)", async () => {
+  const sent = [];
+  let t = 1_800_000_000_000;
+  const a = new WhisperboxClient({ store: mem(), send: async (m) => { sent.push(m); }, now: () => t });
+  await a.init(); a.onConnected();
+  for (let i = 0; i < 3; i++) a.createForm({ title: "f" + i, questions: [{ id: "q1", type: "text", text: "?" }] });
+  sent.length = 0;
+  for (let i = 0; i < 20; i++) a.ingest([bytes('{"v":2,"t":"ids","from":"evil","ids":[]}')]);
+  const events = sent.map((m) => { try { return JSON.parse(new TextDecoder().decode(m)); } catch { return null; } }).filter((x) => x && x.type === "EVENT");
+  assert.ok(events.length > 0 && events.length <= a.log.length, `served ${events.length} for 20 frames, log ${a.log.length}`);
+  assert.ok(a.diag.serveSkipped > 0);
+  t += 3000; sent.length = 0;
+  a.ingest([bytes('{"v":2,"t":"ids","from":"peer","ids":[]}')]);
+  assert.ok(sent.length > 0, "after the window a new asker is served again");
+});
+
+test("a stored log with an unsigned close loads without it (FR-7)", async () => {
+  const store = mem();
+  const a = new WhisperboxClient({ store, send: async () => {} });
+  await a.init(); a.onConnected();
+  const f = a.createForm({ title: "stays open", questions: [{ id: "q1", type: "text", text: "?" }] });
+  const log = JSON.parse(await store.get("wb-log"));
+  log.push({ v: 1, id: "close:" + f.formId + ":forged", type: "form.close", hlc: { wall: Date.now() + 1000, ctr: 0, dev: "x" }, dev: "x", payload: { formId: f.formId, author: a.identity.address } });
+  await store.set("wb-log", JSON.stringify(log));
+  const b = new WhisperboxClient({ store, send: async () => {} });
+  await b.init();
+  assert.strictEqual(b.snapshot().state.forms[f.formId].status, "open");
 });

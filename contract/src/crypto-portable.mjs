@@ -182,6 +182,12 @@ export function verifyInner(r) {
 }
 
 // ── ECIES ─────────────────────────────────────────────────────────────────────────
+/** A compressed secp256k1 public key (66 hex) that decodes to a point on the curve (open-review FR-4). */
+export function validPubPoint(hex) {
+  if (typeof hex !== "string" || !/^0[23][0-9a-fA-F]{64}$/.test(hex)) return false;
+  try { secp256k1.Point.fromHex(hex.toLowerCase()); return true; } catch { return false; }
+}
+
 export function ecdhX(priv32, pub33) {
   const priv = bytes(priv32), pub = bytes(pub33);
   if (priv.length !== 32 || pub.length !== 33) throw new Error("bad ecdh inputs");

@@ -31,6 +31,7 @@ test("a backdated answer the network saw after the close is out; an earlier copy
   tA = N + 10_000; assert.ok(a.closeForm(fid).ok);   // b is offline: never sees the close
   wire.length = 0;
   tB = N + 5_000;                                    // b's device claims "before the close"
+  b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);   // answers need the creator a link names (FR-3)
   assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "late" }]).ok);
   const sent = pump({ ts: (N + 20_000) * 1e6, source: "live", bearer: "delivery" });   // the network had it at +20 s
   assert.ok(sent.length >= 1);
@@ -57,6 +58,7 @@ test("without network time the answer keeps its HLC and is marked unverified tim
   const pump = () => { while (wire.length) { const [from, m] = wire.shift(); (from === "a" ? b : a).ingest([m]); } };
   const fid = a.createForm({ title: "ble", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
   a.catchupRound(); b.catchupRound(); pump(); pump();
+  b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);   // answers need the creator a link names (FR-3)
   assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "x" }]).ok); pump();
   const r = a.decrypt(a.state()).responses[fid];
   assert.strictEqual(r.length, 1); assert.strictEqual(r[0].timeVerified, false); assert.strictEqual(r[0].receivedAt, null);

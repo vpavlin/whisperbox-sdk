@@ -52,7 +52,7 @@ export function editableFields(p) {
     expiresAt: typeof p.expiresAt === "number" ? p.expiresAt : null,
     questions: Array.isArray(p.questions) ? p.questions : [],
     whitelist: p.whitelist && typeof p.whitelist === "object" ? p.whitelist : { type: "none", value: "" },
-    maxResponses: Number.isInteger(p.maxResponses) && p.maxResponses > 0 ? p.maxResponses : null,
+    maxResponses: Number.isInteger(p.maxResponses) && p.maxResponses > 0 && p.maxResponses <= 1e6 ? p.maxResponses : null,
     showResponseCount: p.showResponseCount === true,
     thankYou: typeof p.thankYou === "string" ? p.thankYou : "",
     shuffleQuestions: p.shuffleQuestions === true,
@@ -320,7 +320,8 @@ export function creatorView(state, opts) {
       o.timeVerified = w.net;
       o.receivedAt = w.net ? w.wall : null;
       // the signed claim far from the network's time: shown, not enforced
-      if (w.net && Number.isFinite(Number(o.submittedAt)) && Math.abs(Number(o.submittedAt) - w.wall) > MAX_TIME_SKEW_MS) o.timeSkew = true;
+      // submittedAt is the sender's (sealed, untrusted): only a plausible time is compared (same as the C++ engine)
+      if (w.net && typeof o.submittedAt === "number" && Number.isFinite(o.submittedAt) && o.submittedAt >= 0 && o.submittedAt <= 1e14 && Math.abs(o.submittedAt - w.wall) > MAX_TIME_SKEW_MS) o.timeSkew = true;
       return o;
     };
     let dec = null;

@@ -94,16 +94,19 @@ const isStr = (o, k, max = 4096, req = true) => (!(k in o) ? !req : typeof o[k] 
 const optStr = (o, k, max = 65536) => !(k in o) || o[k] === null || (typeof o[k] === "string" && o[k].length <= max);
 const optBool = (o, k) => !(k in o) || o[k] === null || typeof o[k] === "boolean";
 const optNum = (o, k) => !(k in o) || o[k] === null || (typeof o[k] === "number" && Number.isFinite(o[k]));
+// numbers the fold does arithmetic on, bounded (open-review 2026-10-30, FR-2; same as the C++ engine)
+const optNumIn = (o, k, lo, hi) => !(k in o) || o[k] === null || (typeof o[k] === "number" && Number.isFinite(o[k]) && o[k] >= lo && o[k] <= hi);
+const MAX_TIME_MS = 1e14, MAX_NUMBER_BOUND = 1e15;
 const isInt = (x) => Number.isInteger(x) && x >= 0;
 const isObj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
 export const wellFormedQuestion = (q) => isObj(q) && isStr(q, "id", 128) && isStr(q, "type", 64)
   && optStr(q, "text") && optStr(q, "help") && optStr(q, "minLabel", 512) && optStr(q, "maxLabel", 512) && optStr(q, "style", 32)
-  && optBool(q, "required") && optBool(q, "allowOther") && optBool(q, "shuffleOptions") && optNum(q, "min") && optNum(q, "max")
+  && optBool(q, "required") && optBool(q, "allowOther") && optBool(q, "shuffleOptions") && optNumIn(q, "min", -MAX_NUMBER_BOUND, MAX_NUMBER_BOUND) && optNumIn(q, "max", -MAX_NUMBER_BOUND, MAX_NUMBER_BOUND)
   && (!("options" in q) || q.options === null || (Array.isArray(q.options) && q.options.length <= 500 && q.options.every((o) => typeof o === "string" && o.length <= 4096)));
 export const wellFormedFormFields = (f) => isObj(f)
   && (!("questions" in f) || f.questions === null || (Array.isArray(f.questions) && f.questions.length <= 500 && f.questions.every(wellFormedQuestion)))
   && optStr(f, "title") && optStr(f, "description") && optStr(f, "thankYou") && optStr(f, "quizKey", 4096)
-  && optNum(f, "expiresAt") && optNum(f, "maxResponses") && optNum(f, "editWindowMinutes") && optNum(f, "createdAt")
+  && optNumIn(f, "expiresAt", 0, MAX_TIME_MS) && optNumIn(f, "maxResponses", 0, 1e6) && optNumIn(f, "editWindowMinutes", 0, 525600) && optNumIn(f, "createdAt", 0, MAX_TIME_MS)
   && ["showResponseCount", "shuffleQuestions", "anonymous", "allowEdits"].every((b) => optBool(f, b))
   && (!("whitelist" in f) || f.whitelist === null || (isObj(f.whitelist) && optStr(f.whitelist, "type", 32) && optStr(f.whitelist, "value", 1 << 20)));
 /** One event, serialized (open-review FR-6; Logos Delivery carries ~150 KB). Same as the C++ core. */
@@ -472,6 +475,8 @@ export class WhisperboxClient {
       ...editableFromDef(def, publicKey),
     };
     const e = this.buildEvent(EventType.FORM_PUBLISH, formPublishId(formId), p, true);
+    // the same shape check peers apply, or they'd drop it and our state would differ (open-review FR-5)
+    if (!wellFormedEvent(e)) return { ok: false, error: "the form is too large or has a field peers would refuse" };
     this.adopt(e);
     return { ok: true, formId };
   }
@@ -484,7 +489,9 @@ export class WhisperboxClient {
     const f = this.state().forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
     if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
-    this.adopt(this.buildEvent(EventType.FORM_UPDATE, formUpdateId(formId, C.randomHex(6)), { formId, author: this.identity.address, form: editableFromDef(def, f.publicKey) }, true));
+    const ue = this.buildEvent(EventType.FORM_UPDATE, formUpdateId(formId, C.randomHex(6)), { formId, author: this.identity.address, form: editableFromDef(def, f.publicKey) }, true);
+    if (!wellFormedEvent(ue)) return { ok: false, error: "the form is too large or has a field peers would refuse" };   // FR-5
+    this.adopt(ue);
     return { ok: true, formId };
   }
   isCoOwner(f) { return f.creator !== this.identity.address && (f.coOwners || []).some((c) => c.address === this.identity.address); }
@@ -583,6 +590,7 @@ export class WhisperboxClient {
     }
     if (!f.publicKey) return { ok: false, error: "form not synced yet - try again in a moment" };
     const pin = this.pins[formId] || "";
+    if (!pin) return { ok: false, error: "open this form from its creator's link or QR code to answer: a bare form id doesn't say who made it, so anyone could publish a form under it" };
     if (pin && pin !== f.creator) return { ok: false, error: "this form's creator doesn't match the link you opened - refusing to send answers" };
     if (f.contested && pin !== f.creator) return { ok: false, error: "two different people published a form with this id - open it from the creator's link to answer" };
     const wl = f.whitelist?.type || "none";
@@ -689,7 +697,8 @@ export class WhisperboxClient {
     let dec = null;
     for (const k of keys.values()) {
       let pt; try { pt = C.eciesOpen(k, hex); } catch { continue; }
-      try { dec = JSON.parse(C.utf8Decode(pt)); } catch { dec = null; break; }
+      // what's sealed inside is the sender's: the same size and depth limit as a frame (open-review 2026-10-30, FR-1)
+      try { const txt = C.utf8Decode(pt); dec = txt.length > MAX_EVENT_BYTES || jsonTooDeep(txt, MAX_JSON_DEPTH) ? null : JSON.parse(txt); } catch { dec = null; break; }
       // The key that opened it must be the sealing key of the form it claims to answer.
       const f = dec && st.forms[String(dec.formId ?? "").toLowerCase()];
       if (!f || f.publicKey !== k.pubHex) dec = null;
@@ -705,7 +714,7 @@ export class WhisperboxClient {
     const k = keys.get(f.publicKey);
     if (!k) return null;
     let q = null;
-    try { q = JSON.parse(C.utf8Decode(C.eciesOpen(k, f.quizKey))); } catch { q = null; }
+    try { const txt = C.utf8Decode(C.eciesOpen(k, f.quizKey)); q = jsonTooDeep(txt, MAX_JSON_DEPTH) ? null : JSON.parse(txt); } catch { q = null; }
     if (!q || typeof q !== "object" || Array.isArray(q)) q = null;
     this._quiz.set(f.quizKey, q);
     return q;
@@ -771,7 +780,7 @@ export class WhisperboxClient {
       if (r.to !== cid) continue;
       if (!this._replies.has(r.sealed)) {
         rk = rk || C.deriveReplyKey(this.identity, fid, cid);
-        let b = null; try { b = JSON.parse(C.utf8Decode(C.eciesOpen(rk, r.sealed))); } catch { b = null; }
+        let b = null; try { const txt = C.utf8Decode(C.eciesOpen(rk, r.sealed)); b = jsonTooDeep(txt, MAX_JSON_DEPTH) ? null : JSON.parse(txt); } catch { b = null; }
         this._replies.set(r.sealed, b && typeof b === "object" && !Array.isArray(b) ? b : null);
       }
       const b = this._replies.get(r.sealed); if (b) out.push(b);
@@ -807,9 +816,11 @@ export class WhisperboxClient {
       const pin = this.pins[fid] || "";
       const linkMismatch = !!pin && pin !== f.creator;
       const contested = !!f.contested;
-      const trusted = !linkMismatch && (!contested || pin === f.creator);
+      // answers go only to a creator a link or QR named (open-review 2026-10-30, FR-3; same as the core)
+      const needsLink = !pin && !mine;
+      const trusted = !linkMismatch && !needsLink && (!contested || pin === f.creator);
       Object.assign(f, {
-        contested, pinnedCreator: pin || null, linkMismatch, mine, mySubmitted: submitted,
+        contested, pinnedCreator: pin || null, linkMismatch, needsLink, mine, mySubmitted: submitted,
         myConfirmed: submitted && (f.confirmations || []).includes(cid), allowed,
         canRespond: trusted && !mine && !submitted && allowed && f.status === "open" && !!f.publicKey,
         // mine, but no key here to open its answers (Keycard form on a new install): tap to restore

@@ -3,7 +3,7 @@
 // so the phone and the desktop keep the same event set.
 import test from "node:test";
 import assert from "node:assert";
-import { WhisperboxClient, parseLink, MAX_CLOCK_LEAD_MS } from "../src/client.mjs";
+import { WhisperboxClient, parseLink, MAX_CLOCK_LEAD_MS, wellFormedFormFields } from "../src/client.mjs";
 import { MAX_HLC_CTR } from "../../contract/src/hlc.mjs";
 import * as C from "../../contract/src/crypto-portable.mjs";
 import { responseSubmitId } from "../../contract/src/events.mjs";
@@ -66,6 +66,7 @@ test("answer tags are random, links that can't be valid are refused", async () =
   const pump = () => { while (wire.length) { const m = wire.shift(); a.ingest([m]); b.ingest([m]); } };
   const fid = a.createForm({ title: "tags", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
   a.catchupRound(); b.catchupRound(); pump();
+  b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);   // answers need the creator a link names (FR-3)
   assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "x" }]).ok); pump();
   const resp = a.log.find((e) => e.type === "response.submit");
   assert.ok(resp, "a got b's answer");
@@ -132,4 +133,32 @@ test("a stored log with an unsigned close loads without it (FR-7)", async () => 
   const b = new WhisperboxClient({ store, send: async () => {} });
   await b.init();
   assert.strictEqual(b.snapshot().state.forms[f.formId].status, "open");
+});
+
+// open-review 2026-10-30 (the 0.5.1 re-review): the decrypted path, numbers, bare ids
+test("a sealed deep answer, a 1e300 limit and a bare-id answer are refused (FR-1/2/3)", async () => {
+  const wire = [];
+  const a = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["a", x]); } });
+  const b = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["b", x]); } });
+  await a.init(); await b.init(); a.onConnected(); b.onConnected();
+  const pump = () => { while (wire.length) { const [from, m] = wire.shift(); (from === "a" ? b : a).ingest([m]); } };
+  const fid = a.createForm({ title: "deep target", questions: [{ id: "q1", type: "text", text: "?" }] }).formId;
+  a.catchupRound(); b.catchupRound(); pump(); pump();
+  const pub = a.snapshot().state.forms[fid].publicKey;
+  // FR-1: sealed to the form's public key, 50,000 deep inside
+  const pt = `{"formId":"${fid}","respondent":"0x${"9".repeat(40)}","answers":[],"signature":null,"x":${"[".repeat(50000)}${"]".repeat(50000)}}`;
+  const sealed = C.toHex(C.sealToCreator(null, pub, pt));
+  const ev = { v: 1, id: responseSubmitId(sealed), type: "response.submit", hlc: { wall: Date.now(), ctr: 0, dev: "x" }, dev: "x", payload: { encryptedPayload: sealed } };
+  a.ingest([bytes(JSON.stringify({ v: 1, type: "EVENT", event: ev }))]);
+  const snap = a.snapshot();
+  assert.ok(snap && !(snap.creatorView.responses[fid] || []).length, "the deep answer is dropped, the view still works");
+  // FR-2: maxResponses 1e300 fails the shape check
+  assert.strictEqual(wellFormedFormFields({ title: "x", questions: [], maxResponses: 1e300 }), false);
+  assert.strictEqual(wellFormedFormFields({ title: "x", questions: [], editWindowMinutes: 9.2e18 }), false);
+  // FR-3: b knows the form from catch-up only: no creator pinned, no answering
+  const bf = b.snapshot().state.forms[fid];
+  assert.ok(bf.needsLink && !bf.canRespond, "needs the creator's link");
+  assert.strictEqual(b.submitResponse(fid, [{ questionId: "q1", value: "x" }]).ok, false);
+  b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);
+  assert.ok(b.snapshot().state.forms[fid].canRespond, "with the link it can");
 });

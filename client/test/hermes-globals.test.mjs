@@ -24,6 +24,7 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   const fid = a.createForm({ title: "Ünïcode ✓", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
   a.catchupRound(); b.catchupRound(); pump();                  // RBSR fingerprints (the crash site)
   assert.ok(b.snapshot().state.forms[fid], "b reconciled a's form via RBSR");
+  b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);   // answers need the creator a link names (FR-3)
   assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "žluťoučký" }]).ok); pump();
   assert.strictEqual(a.snapshot().creatorView.responses[fid][0].answers[0].value, "žluťoučký");
   assert.ok(a.confirmResponse(fid, b.identity.address).ok); pump();
@@ -44,14 +45,17 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   assert.strictEqual(b.snapshot().state.forms[later.id].answerDraft[0].value, true);
   const capped = a.createForm({ title: "Cap 1", maxResponses: 1, questions: [{ id: "q1", type: "boolean", text: "?", required: true }] }).formId;
   a.setAutoReceipts(capped, true); pump();
+  b.importForm(`whisperbox://form?id=${capped}&by=${a.identity.address}`);
   assert.ok(b.submitResponse(capped, [{ questionId: "q1", value: false }]).ok); pump();
   a.lastHousekeep = 0; a.tick(); pump();
   assert.strictEqual(b.snapshot().state.forms[capped].status, "closed", "auto-closed at the cap");
   assert.ok(b.snapshot().state.forms[capped].myConfirmed, "automatic receipt");
   // answer edits: replace within the window, locked by the receipt
   const ed = a.createForm({ title: "Edit me", allowEdits: true, questions: [{ id: "q1", type: "boolean", text: "?", required: true }] }).formId; pump();
+  b.importForm(`whisperbox://form?id=${ed}&by=${a.identity.address}`);
   assert.ok(b.submitResponse(ed, [{ questionId: "q1", value: true }]).ok); pump();
   assert.ok(b.snapshot().state.forms[ed].canEdit);
+  b.importForm(`whisperbox://form?id=${ed}&by=${a.identity.address}`);
   assert.ok(b.submitResponse(ed, [{ questionId: "q1", value: false }]).ok); pump();
   const er = a.snapshot().creatorView.responses[ed];
   assert.strictEqual(er.length, 1); assert.strictEqual(er[0].answers[0].value, false); assert.strictEqual(er[0].edits, 1);
@@ -59,6 +63,7 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   assert.ok(!b.snapshot().state.forms[ed].canEdit && !b.submitResponse(ed, [{ questionId: "q1", value: true }]).ok, "locked after the receipt");
   // anonymous forms: per-form identity; every answer event carries a per-form device tag
   const an = a.createForm({ title: "Anon", anonymous: true, questions: [{ id: "q1", type: "boolean", text: "?", required: true }] }).formId; pump();
+  b.importForm(`whisperbox://form?id=${an}&by=${a.identity.address}`);
   assert.ok(b.submitResponse(an, [{ questionId: "q1", value: true }]).ok);
   const ev = b.log.filter((e) => e.type === "response.submit").pop();
   assert.notStrictEqual(ev.dev, b.deviceId, "no real device id on the wire"); assert.strictEqual(ev.hlc.dev, ev.dev);
@@ -69,6 +74,7 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   // "new answers": flagged until the creator marks them seen
   const nf = a.createForm({ title: "New?", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId; pump();
   assert.strictEqual(a.snapshot().state.forms[nf].newResponses, 0);
+  b.importForm(`whisperbox://form?id=${nf}&by=${a.identity.address}`);
   assert.ok(b.submitResponse(nf, [{ questionId: "q1", value: "hi" }]).ok); pump();
   assert.strictEqual(a.snapshot().state.forms[nf].newResponses, 1);
   assert.ok(a.snapshot().newResponses >= 1);

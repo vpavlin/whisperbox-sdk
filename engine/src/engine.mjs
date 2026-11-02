@@ -274,6 +274,27 @@ export function whitelistAddresses(wl) {
 /** A signed submittedAt this far from the network time is flagged (timeSkew), ADR 0019. */
 export const MAX_TIME_SKEW_MS = 5 * 60 * 1000;
 
+// Decrypted answers come from the respondent: keep only well-shaped rows (open-review 2026-11-01,
+// FR-2; same as the C++ engine). A row is {questionId: string 1..128, value}, the value null / bool /
+// number / string / {other: string|null} / an array of numbers, strings and {other}.
+const answerOtherOk = (v) => v !== null && typeof v === "object" && !Array.isArray(v) && "other" in v && (typeof v.other === "string" || v.other === null);
+const answerScalarOk = (v) => v === null || typeof v === "boolean" || typeof v === "string" || (typeof v === "number" && Number.isFinite(v));
+const answerValueOk = (v) => answerScalarOk(v) || answerOtherOk(v)
+  || (Array.isArray(v) && v.length <= 1000 && v.every((x) => (typeof x === "number" && Number.isFinite(x)) || typeof x === "string" || answerOtherOk(x)));
+const utf8Len = (str) => { let n = 0; for (const ch of str) { const c = ch.codePointAt(0); n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4; } return n; };
+export function sanitizeAnswers(a) {
+  const out = [];
+  if (!Array.isArray(a)) return out;
+  for (const row of a) {
+    if (out.length >= 1000) break;
+    if (!row || typeof row !== "object" || Array.isArray(row) || typeof row.questionId !== "string") continue;
+    if (row.questionId === "" || utf8Len(row.questionId) > 128) continue;   // bytes, as the C++ engine
+    if ("value" in row && !answerValueOk(row.value)) continue;
+    out.push(row);
+  }
+  return out;
+}
+
 export function creatorView(state, opts) {
   const identity = lc(opts.identity);
   const open = typeof opts.open === "function" ? opts.open : () => null;
@@ -364,7 +385,7 @@ export function creatorView(state, opts) {
         // still the creator's to read and export (answers from older clients are unsigned), but it
         // proves nothing: it doesn't take a respondent's slot, count towards the cap or edit anything
         view.responses[formId].push(timeFields({ respondent: lc(typeof dec.respondent === "string" ? dec.respondent : ""), submittedAt: dec.submittedAt ?? null,
-          answers: Array.isArray(dec.answers) ? dec.answers : [], signature: null,
+          answers: sanitizeAnswers(dec.answers), signature: null,
           confirmationId: typeof dec.confirmationId === "string" ? dec.confirmationId : null, hlc: blob.hlc, verified: false }));
         continue;
       }
@@ -387,7 +408,7 @@ export function creatorView(state, opts) {
       if (w.wall - prev.firstWall > (f.editWindowMinutes || 15) * 60000) { drop(view.dropped, "edit-too-late"); continue; }
       const rh = state.receiptHlc?.[formId]?.[prev.cid];
       if (rh && atOrAfter(w, blob, rh)) { drop(view.dropped, "edit-after-receipt"); continue; }
-      Object.assign(prev.entry, { submittedAt: dec.submittedAt ?? null, answers: dec.answers ?? [], signature: dec.signature ?? null, edits: prev.entry.edits + 1 });
+      Object.assign(prev.entry, { submittedAt: dec.submittedAt ?? null, answers: sanitizeAnswers(dec.answers), signature: dec.signature ?? null, edits: prev.entry.edits + 1 });
       if (typeof dec.replyPub === "string" && /^0[23][0-9a-fA-F]{64}$/.test(dec.replyPub)) prev.entry.replyPub = dec.replyPub.toLowerCase();
       continue;
     }
@@ -400,7 +421,7 @@ export function creatorView(state, opts) {
     const entry = {
       respondent,
       submittedAt: dec.submittedAt ?? null,
-      answers: dec.answers ?? [],
+      answers: sanitizeAnswers(dec.answers),
       signature: dec.signature ?? null,
       // Respondent-chosen random receipt id (sealed, so the public confirmation
       // can't be linked to an address). null on pre-0.2 responses. Edits keep it.

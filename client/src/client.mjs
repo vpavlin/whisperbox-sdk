@@ -86,7 +86,8 @@ export function netMsOf(meta, now) {
   if (!meta || typeof meta !== "object") return 0;
   let t = Number(meta.tsMs);
   if (!(t > 0)) { const ns = Number(meta.ts); t = ns > 1e15 ? Math.floor(ns / 1e6) : 0; }
-  if (!(t > 1e12) || t > now + MAX_CLOCK_LEAD_MS) return 0;
+  // the sender's node sets it: only within MAX_CLOCK_LEAD_MS of our receipt, either way (FR-6, as the core)
+  if (!(t > 1e12) || t > now + MAX_CLOCK_LEAD_MS || t < now - MAX_CLOCK_LEAD_MS) return 0;
   return Math.floor(t);
 }
 export const MAX_CLOCK_LEAD_MS = 5 * 60 * 1000;
@@ -102,7 +103,15 @@ const isObj = (x) => x !== null && typeof x === "object" && !Array.isArray(x);
 export const wellFormedQuestion = (q) => isObj(q) && isStr(q, "id", 128) && isStr(q, "type", 64)
   && optStr(q, "text") && optStr(q, "help") && optStr(q, "minLabel", 512) && optStr(q, "maxLabel", 512) && optStr(q, "style", 32)
   && optBool(q, "required") && optBool(q, "allowOther") && optBool(q, "shuffleOptions") && optNumIn(q, "min", -MAX_NUMBER_BOUND, MAX_NUMBER_BOUND) && optNumIn(q, "max", -MAX_NUMBER_BOUND, MAX_NUMBER_BOUND)
-  && (!("options" in q) || q.options === null || (Array.isArray(q.options) && q.options.length <= 500 && q.options.every((o) => typeof o === "string" && o.length <= 4096)));
+  && (!("options" in q) || q.options === null || (Array.isArray(q.options) && q.options.length <= 500 && q.options.every((o) => typeof o === "string" && o.length <= 4096)))
+  && (q.type !== "scale" || scaleOk(q));
+// a scale is drawn as one button per step: whole numbers, min <= max, at most MAX_SCALE_SPAN steps
+// apart (open-review 2026-11-01, FR-7: a 0..1000000 scale froze the view; same as the C++ engine)
+export const MAX_SCALE_SPAN = 100;
+function scaleOk(q) {
+  const lo = q.min ?? 1, hi = q.max ?? 5;
+  return Number.isInteger(lo) && Number.isInteger(hi) && lo <= hi && hi - lo <= MAX_SCALE_SPAN;
+}
 export const wellFormedFormFields = (f) => isObj(f)
   && (!("questions" in f) || f.questions === null || (Array.isArray(f.questions) && f.questions.length <= 500 && f.questions.every(wellFormedQuestion)))
   && optStr(f, "title") && optStr(f, "description") && optStr(f, "thankYou") && optStr(f, "quizKey", 4096)
@@ -114,6 +123,11 @@ export const MAX_EVENT_BYTES = 256 * 1024;
 /** A decoded frame, and how deep its JSON may nest (open-review FR-1). */
 export const MAX_FRAME_BYTES = 1 << 20;
 export const MAX_JSON_DEPTH = 32;
+// open-review 2026-11-01, FR-3 (same as the core): new answers a minute from the network, and the log caps
+export const RESP_BUDGET = 600;
+export const MAX_LOG_RESPONSES = 50000;
+export const MAX_LOG_BYTES = 256 * 1024 * 1024;
+export const LOG_RESERVE_BYTES = 32 * 1024 * 1024;
 /** true when the JSON text nests deeper than max (counted outside strings, without parsing). */
 export function jsonTooDeep(text, max) {
   let d = 0, inStr = false;
@@ -135,7 +149,8 @@ export function wellFormedEvent(e) {
   if (!isObj(h) || !isInt(h.wall) || h.wall < 0 || !isInt(h.ctr) || h.ctr < 0 || h.ctr > MAX_HLC_CTR || !optStr(h, "dev", 256)) return false;
   const p = e.payload;
   if (!isObj(p)) return false;
-  if (e.type === EventType.RESPONSE_SUBMIT) return isStr(p, "encryptedPayload", MAX_EVENT_BYTES) && e.id === responseSubmitId(p.encryptedPayload);
+  // canonical hex only (lower case, whole bytes): the id hashes the text (FR-10, as the C++ engine)
+  if (e.type === EventType.RESPONSE_SUBMIT) return isStr(p, "encryptedPayload", MAX_EVENT_BYTES) && p.encryptedPayload.length % 2 === 0 && /^[0-9a-f]*$/.test(p.encryptedPayload) && e.id === responseSubmitId(p.encryptedPayload);
   if (e.type === EventType.FORM_PUBLISH) return isStr(p, "id", 128) && isStr(p, "creator", 64) && optStr(p, "publicKey", 256) && wellFormedFormFields(p) && e.id === formPublishId(p.id);
   if (!isStr(p, "formId", 128) || !isStr(p, "author", 64)) return false;
   if (e.type === EventType.RESPONSE_CONFIRM) {
@@ -174,6 +189,7 @@ export class WhisperboxClient {
     this.nodeReady = false; this.listeners = new Set();
     this.diag = { rxRaw: 0, rxNew: 0, rxDup: 0, txTotal: 0, txErr: 0, admDropSig: 0, admDropType: 0, rbsrRx: 0, legacyReseeds: 0 };
     this.syncTries = 0; this.lastSyncAt = 0; this.lastReserveAt = 0; this.unsent = new Set();
+    this.logBytes = 0; this.logResponses = 0; this.respTokens = 0; this.respRefillAt = 0;
   }
 
   // ── lifecycle ──────────────────────────────────────────────────────────────────
@@ -182,7 +198,7 @@ export class WhisperboxClient {
     this.identity = (priv && C.identityFromPriv(priv)) || null;
     if (!this.identity) { this.identity = C.generateIdentity(); await this.secrets.set("wb-identity", C.toHex(this.identity.priv)); }
     let dev = (await this.store.get("wb-device")) || "";
-    if (!dev || dev === "whisperbox-core") { dev = "wb-" + C.randomHex(6); await this.store.set("wb-device", dev); }
+    if (!dev || dev === "whisperbox-core" || !/^[A-Za-z0-9_-]{1,64}$/.test(dev)) { dev = "wb-" + C.randomHex(6); await this.store.set("wb-device", dev); }
     this.deviceId = dev;
     this.clock = new Clock(dev);
     const parse = (s, d) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
@@ -194,6 +210,7 @@ export class WhisperboxClient {
     // close, update or co-owner grant (open-review FR-7).
     const signedType = (t) => [EventType.FORM_PUBLISH, EventType.RESPONSE_CONFIRM, EventType.FORM_CLOSE, EventType.FORM_REOPEN, EventType.FORM_UPDATE, EventType.FORM_COOWNER, EventType.RESPONSE_REPLY].includes(t);
     this.log = mergeWhisperbox((Array.isArray(raw) ? raw : []).filter((e) => wellFormedEvent(e) && (!signedType(e.type) || (e.sig && C.verifyEvent(e)))));
+    this.recountLog();
     const lead = this.now() + MAX_CLOCK_LEAD_MS;
     for (const e of this.log) if (e.hlc.wall <= lead) this.clock.receive(e.hlc);   // never adopt a far-future clock
     this.watched = new Set(parse(await this.store.get("wb-watched"), []));
@@ -328,8 +345,23 @@ export class WhisperboxClient {
       if (!wellFormedEvent(e)) { this.diag.admDropType++; return true; }
       if (e.hlc.wall > this.now() + MAX_CLOCK_LEAD_MS) { this.diag.admDropFuture = (this.diag.admDropFuture || 0) + 1; return true; }   // WB-3
       if (!this.admit(e)) return true;
+      // Answers are unsigned on the wire: a node-wide budget, and the log a cap (open-review
+      // 2026-11-01, FR-3; same numbers as the core). The rest comes on a later catch-up round.
+      const isResp = e.type === EventType.RESPONSE_SUBMIT;
+      const eBytes = JSON.stringify(e).length;
+      if (isResp) {
+        const now = this.now();
+        if (!this.respRefillAt) { this.respRefillAt = now; this.respTokens = RESP_BUDGET; }
+        this.respTokens = Math.min(RESP_BUDGET, this.respTokens + (now - this.respRefillAt) * RESP_BUDGET / 60000);
+        this.respRefillAt = now;
+        if (this.respTokens < 1) { this.diag.admDropBudget = (this.diag.admDropBudget || 0) + 1; return true; }
+        if (this.logResponses >= MAX_LOG_RESPONSES || this.logBytes + eBytes > MAX_LOG_BYTES) { this.diag.admDropFull = (this.diag.admDropFull || 0) + 1; return true; }
+      } else if (this.logBytes + eBytes > MAX_LOG_BYTES + LOG_RESERVE_BYTES) { this.diag.admDropFull = (this.diag.admDropFull || 0) + 1; return true; }
       const earlier = this.noteNetTime(e);
-      if (mergeOne(this.log, e)) { this.diag.rxNew++; this.clock.receive(e.hlc); this.saveLog(); this.emit(); }
+      if (mergeOne(this.log, e)) {
+        this.logBytes += eBytes; if (isResp) { this.logResponses++; this.respTokens -= 1; }
+        this.diag.rxNew++; this.clock.receive(e.hlc); this.saveLog(); this.emit();
+      }
       else { this.diag.rxDup++; if (earlier) this.emit(); }
       return true;
     }
@@ -433,7 +465,14 @@ export class WhisperboxClient {
     const e = { v: 1, id, type, hlc: this.clock.send(this.now()), dev: this.deviceId, payload };
     return sign ? { ...e, ...C.signEvent(this.identity, e) } : e;
   }
-  adopt(e) { if (mergeOne(this.log, e)) { this.clock.receive(e.hlc); this.saveLog(); } this.broadcast(e); this.emit(); }
+  adopt(e) {
+    if (mergeOne(this.log, e)) { this.logBytes += JSON.stringify(e).length; if (e.type === EventType.RESPONSE_SUBMIT) this.logResponses++; this.clock.receive(e.hlc); this.saveLog(); }
+    this.broadcast(e); this.emit();
+  }
+  recountLog() {
+    this.logBytes = 0; this.logResponses = 0;
+    for (const e of this.log) { this.logBytes += JSON.stringify(e).length; if (e.type === EventType.RESPONSE_SUBMIT) this.logResponses++; }
+  }
   state() { return computeState(this.log, { identity: this.identity.address, prefer: this.pins }); }
 
   newFormId() { return "form-" + C.randomHex(4); }
@@ -505,7 +544,10 @@ export class WhisperboxClient {
     const f = st.forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
     if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
+    // a legacy form's key IS the identity key: never share it (open-review 2026-11-01, FR-1; same as the core)
+    if (f.publicKey === this.identity.pubHex) return { ok: false, error: "this form was made before per-form keys: its key is your identity key, so it can't be shared with a co-owner - duplicate it as a new form and add co-owners there" };
     const key = this.formKeys(st).get(f.publicKey);
+    if (key && key.priv && this.identity.priv && C.toHex(key.priv) === C.toHex(this.identity.priv)) return { ok: false, error: "this form was made before per-form keys: its key is your identity key, so it can't be shared with a co-owner - duplicate it as a new form and add co-owners there" };
     if (!key) return { ok: false, error: "this form's key isn't on this device" };
     const owner = "0x" + C.sha256Hex(C.fromHex(code)).slice(24);
     if (owner === this.identity.address) return { ok: false, error: "that's your own code" };
@@ -564,7 +606,10 @@ export class WhisperboxClient {
     const f = st.forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
     if (f.creator !== this.identity.address && !this.isCoOwner(f)) return { ok: false, error: "not the creator or a co-owner" };
-    const r = (this.decrypt(st).responses[formId] || []).find((x) => lc(x.respondent) === respondent);
+    // only a verified answer: an unsigned one can claim anyone's address (FR-8, as the core)
+    const mine = (this.decrypt(st).responses[formId] || []).filter((x) => typeof x.respondent === "string" && lc(x.respondent) === respondent);
+    const r = mine.find((x) => x.verified !== false);
+    if (!r && mine.length) return { ok: false, error: "that answer isn't signed by the address it names, so it can't get a receipt" };
     if (!r) return { ok: false, error: "no decrypted response from that respondent" };
     const cid = confirmIdOf(r, formId);
     this.adopt(this.buildEvent(EventType.RESPONSE_CONFIRM, responseConfirmId(formId, cid), { formId, confirmationId: cid, author: this.identity.address }, true));
@@ -625,9 +670,12 @@ export class WhisperboxClient {
   importForm(input) {
     const l = parseLink(input);
     if (!l || !l.formId) return { ok: false, error: "not a WhisperBox link or form id" };
+    // the first link's creator is pinned: a later link naming another creator is refused (FR-5, as the core)
+    const pin = this.pins[l.formId];
+    if (l.by && pin && pin !== l.by) return { ok: false, error: `this link names creator ${l.by}, but you opened this form from a link by ${pin}. Remove the form from this device first if you trust the new link.` };
     const have = !!this.state().forms[l.formId];
     this.watched.add(l.formId);
-    if (l.by) this.pins[l.formId] = l.by;
+    if (l.by && !pin) this.pins[l.formId] = l.by;
     this.saveMeta();
     if (!have && this.nodeReady) { this.requestSync(); this.catchupRound(); }
     this.emit();
@@ -846,12 +894,18 @@ export class WhisperboxClient {
     if (seenDirty) this.store.set("wb-seen", JSON.stringify(this.seen));
     return {
       v: 1, identity: { address: this.identity.address, pubHex: this.identity.pubHex }, deviceId: this.deviceId, newResponses: newTotal,
-      nodeReady: this.nodeReady, state: st, creatorView: cv, watched: [...this.watched],
+      nodeReady: this.nodeReady,
+      // the sealed answers are opaque to a view and grew the snapshot with every blob (FR-3): a count
+      state: (({ responses, ...rest }) => ({ ...rest, responseCount: responses.length }))(st), creatorView: cv, watched: [...this.watched],
       pendingForms: [...this.watched].filter((id) => !st.forms[id]), mySubmissions: Object.keys(this.mySubs), hidden: [...this.hidden], drafts: Object.values(this.drafts),
       diagnostics: { ...this.diag, logSize: this.log.length },
     };
   }
   exportCsv(formId) {
+    // form and answer fields come from peers: a mistyped one fails the export, never the caller (FR-2)
+    try { return this.exportCsvUnsafe(formId); } catch (e) { return { ok: false, error: "export failed: " + (e?.message || e) }; }
+  }
+  exportCsvUnsafe(formId) {
     formId = lc(formId);
     const st = this.state(); const f = st.forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
@@ -862,16 +916,17 @@ export class WhisperboxClient {
     const cell = (v0) => { const v = neutral(v0); return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
     const opt = (q, x) => (typeof x === "number" && q.options && q.options[x] !== undefined ? String(q.options[x]) : x == null ? "" : typeof x === "boolean" ? (x ? "Yes" : "No") : typeof x === "string" ? x : typeof x === "number" ? String(x) : x && typeof x === "object" && "other" in x ? "Other: " + x.other : JSON.stringify(x));
     const val = (q, v) => (Array.isArray(v) ? v.map((x) => opt(q, x)).join("; ") : opt(q, v));
-    const iso = (ms) => (ms > 0 ? new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z") : "");
-    const qs = f.questions || [];
+    const iso = (ms) => (typeof ms === "number" && ms > 0 && ms <= 1e14 ? new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z") : "");
+    const qs = (Array.isArray(f.questions) ? f.questions : []).filter((q) => q && typeof q === "object" && !Array.isArray(q));
+    const str = (v) => (typeof v === "string" ? v : "");
     const quiz = this.quizOf(f, this.formKeys(st));
     // verified: signed by the respondent it names; timeVerified: the network's time (open-review FR-5)
     const yn = (v) => (typeof v === "boolean" ? (v ? "yes" : "no") : "");
-    const rows = [["respondent", "verified", "submittedAt", "timeVerified", "confirmed", ...(quiz ? ["score"] : []), ...qs.map((q) => q.text || q.id)]];
+    const rows = [["respondent", "verified", "submittedAt", "timeVerified", "confirmed", ...(quiz ? ["score"] : []), ...qs.map((q) => str(q.text) || str(q.id))]];
     for (const r of this.decrypt(st).responses[formId] || []) {
-      const byQ = new Map((r.answers || []).map((a) => [a.questionId, a.value]));
+      const byQ = new Map((Array.isArray(r.answers) ? r.answers : []).filter((a) => a && typeof a.questionId === "string").map((a) => [a.questionId, a.value]));
       const sc = quiz ? scoreAnswers(qs, quiz, r.answers) : null;
-      rows.push([r.respondent, yn(r.verified), iso(r.submittedAt || 0), yn(r.timeVerified), (f.confirmations || []).includes(confirmIdOf(r, formId)) ? "yes" : "no",
+      rows.push([str(r.respondent), yn(r.verified), iso(r.submittedAt || 0), yn(r.timeVerified), (f.confirmations || []).includes(confirmIdOf(r, formId)) ? "yes" : "no",
         ...(sc ? [`${sc.score}/${sc.outOf}`] : []),
         ...qs.map((q) => (byQ.has(q.id) ? val(q, byQ.get(q.id)) : ""))]);
     }

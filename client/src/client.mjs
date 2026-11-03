@@ -10,7 +10,7 @@
 //   signing, ECIES), engine/engine.mjs (fold + creator view), and loam-sync's RBSR
 //   catch-up (fp/ids/need) over event keys.
 import { mergeOne, mergeWhisperbox, eventKey } from "../../contract/src/merge.mjs";
-import { Clock, MAX_HLC_CTR } from "../../contract/src/hlc.mjs";
+import { Clock, MAX_HLC_CTR, compareHlc } from "../../contract/src/hlc.mjs";
 import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId, formReopenId, formUpdateId, formCoOwnerId, responseConfirmBatchId, responseReplyId } from "../../contract/src/events.mjs";
 import * as C from "../../contract/src/crypto-portable.mjs";
 import { validateAnswers, emptyAnswer as emptyAnswerOf, scoreAnswers } from "../../contract/src/answers.mjs";
@@ -189,7 +189,7 @@ export class WhisperboxClient {
     this.nodeReady = false; this.listeners = new Set();
     this.diag = { rxRaw: 0, rxNew: 0, rxDup: 0, txTotal: 0, txErr: 0, admDropSig: 0, admDropType: 0, rbsrRx: 0, legacyReseeds: 0 };
     this.syncTries = 0; this.lastSyncAt = 0; this.lastReserveAt = 0; this.unsent = new Set();
-    this.logBytes = 0; this.logResponses = 0; this.respTokens = 0; this.respRefillAt = 0;
+    this.logBytes = 0; this.logResponses = 0; this.held = new Map(); this.buckets = {};
   }
 
   // ── lifecycle ──────────────────────────────────────────────────────────────────
@@ -319,6 +319,15 @@ export class WhisperboxClient {
     if (!env || typeof env !== "object") return false;
     if (env.v === 2 && (env.t === "fp" || env.t === "ids" || env.t === "need")) {
       if (!wellFormedCatchup(env)) { this.diag.admDropType++; return true; }
+      // catch-up frames have a budget, and at most 16 ranges with increasing bounds (open-review
+      // 2026-11-02, FR-4; as the core: a small frame cost a scan of the whole id set per range)
+      if (!this.takeToken("ctl", 120)) { this.diag.ctlDropBudget = (this.diag.ctlDropBudget || 0) + 1; return true; }
+      if (env.t === "fp") {
+        const b = env.bounds || [];
+        let ok = (env.fps || []).length <= 16;
+        for (let i = 0; ok && i < b.length; i++) if ((i === 0 ? env.lo !== undefined && !(b[i] > env.lo) : !(b[i] > b[i - 1])) || (env.hi !== undefined && b[i] > env.hi)) ok = false;
+        if (!ok) { this.diag.rxBad = (this.diag.rxBad || 0) + 1; return true; }
+      }
       const byKey = new Map(this.log.map((e) => [eventKey(e), e]));
       const step = respond([...byKey.keys()].map((id) => ({ id })), env, this.deviceId);
       for (const r of step.replies) this.sendEnvelope(r);
@@ -346,20 +355,23 @@ export class WhisperboxClient {
       if (e.hlc.wall > this.now() + MAX_CLOCK_LEAD_MS) { this.diag.admDropFuture = (this.diag.admDropFuture || 0) + 1; return true; }   // WB-3
       if (!this.admit(e)) return true;
       // Answers are unsigned on the wire: a node-wide budget, and the log a cap (open-review
-      // 2026-11-01, FR-3; same numbers as the core). The rest comes on a later catch-up round.
+      // 2026-11-01, FR-3; same numbers as the core). Every copy costs, a replayed one too, and signed
+      // events have their own budget (open-review 2026-11-02, FR-2/FR-6). The rest comes on a later
+      // catch-up round.
       const isResp = e.type === EventType.RESPONSE_SUBMIT;
-      const eBytes = JSON.stringify(e).length;
-      if (isResp) {
-        const now = this.now();
-        if (!this.respRefillAt) { this.respRefillAt = now; this.respTokens = RESP_BUDGET; }
-        this.respTokens = Math.min(RESP_BUDGET, this.respTokens + (now - this.respRefillAt) * RESP_BUDGET / 60000);
-        this.respRefillAt = now;
-        if (this.respTokens < 1) { this.diag.admDropBudget = (this.diag.admDropBudget || 0) + 1; return true; }
-        if (this.logResponses >= MAX_LOG_RESPONSES || this.logBytes + eBytes > MAX_LOG_BYTES) { this.diag.admDropFull = (this.diag.admDropFull || 0) + 1; return true; }
-      } else if (this.logBytes + eBytes > MAX_LOG_BYTES + LOG_RESERVE_BYTES) { this.diag.admDropFull = (this.diag.admDropFull || 0) + 1; return true; }
+      const key = eventKey(e);
+      const held = this.held.get(key);
+      const dup = held !== undefined && compareHlc(e.hlc, held) >= 0;
+      if (!this.takeToken(isResp ? "resp" : "sig", RESP_BUDGET)) { this.diag.admDropBudget = (this.diag.admDropBudget || 0) + 1; return true; }
+      const eBytes = dup ? 0 : JSON.stringify(e).length;
+      if (!dup && held === undefined) {
+        if (isResp ? (this.logResponses >= MAX_LOG_RESPONSES || this.logBytes + eBytes > MAX_LOG_BYTES) : this.logBytes + eBytes > MAX_LOG_BYTES + LOG_RESERVE_BYTES) { this.diag.admDropFull = (this.diag.admDropFull || 0) + 1; return true; }
+      }
       const earlier = this.noteNetTime(e);
+      if (dup) { this.diag.rxDup++; if (earlier) this.emit(); return true; }   // known without a scan of the log
       if (mergeOne(this.log, e)) {
-        this.logBytes += eBytes; if (isResp) { this.logResponses++; this.respTokens -= 1; }
+        if (held === undefined) { this.logBytes += eBytes; if (isResp) this.logResponses++; }
+        this.held.set(key, e.hlc);
         this.diag.rxNew++; this.clock.receive(e.hlc); this.saveLog(); this.emit();
       }
       else { this.diag.rxDup++; if (earlier) this.emit(); }
@@ -376,7 +388,8 @@ export class WhisperboxClient {
     const prev = this.netTimes[e.id];
     if (prev && prev <= t) return false;
     this.netTimes[e.id] = t;
-    this.store.set("wb-nettime", JSON.stringify(this.netTimes)).catch?.(() => {});
+    // saved once per burst, not per copy (FR-6: a replayed answer rewrote the whole map each time)
+    if (!this.netSaveTimer) this.netSaveTimer = setTimeout(() => { this.netSaveTimer = null; this.store.set("wb-nettime", JSON.stringify(this.netTimes)).catch?.(() => {}); }, 250);
     this.diag.netTs = (this.diag.netTs || 0) + 1;
     return true;
   }
@@ -465,13 +478,27 @@ export class WhisperboxClient {
     const e = { v: 1, id, type, hlc: this.clock.send(this.now()), dev: this.deviceId, payload };
     return sign ? { ...e, ...C.signEvent(this.identity, e) } : e;
   }
+  // An event peers would refuse is neither kept nor sent (open-review 2026-11-02, FR-9/FR-10).
   adopt(e) {
-    if (mergeOne(this.log, e)) { this.logBytes += JSON.stringify(e).length; if (e.type === EventType.RESPONSE_SUBMIT) this.logResponses++; this.clock.receive(e.hlc); this.saveLog(); }
+    if (!wellFormedEvent(e)) { this.lastError = "refused a local " + e.type + " peers would drop"; return false; }
+    const key = eventKey(e);
+    if (mergeOne(this.log, e)) {
+      if (!this.held.has(key)) { this.logBytes += JSON.stringify(e).length; if (e.type === EventType.RESPONSE_SUBMIT) this.logResponses++; }
+      this.held.set(key, e.hlc); this.clock.receive(e.hlc); this.saveLog();
+    }
     this.broadcast(e); this.emit();
+    return true;
+  }
+  // a token bucket per kind: perMin a minute, a burst of the same
+  takeToken(kind, perMin) {
+    const now = this.now(), b = this.buckets[kind] || (this.buckets[kind] = { t: perMin, at: now });
+    b.t = Math.min(perMin, b.t + (now - b.at) * perMin / 60000); b.at = now;
+    if (b.t < 1) return false;
+    b.t -= 1; return true;
   }
   recountLog() {
-    this.logBytes = 0; this.logResponses = 0;
-    for (const e of this.log) { this.logBytes += JSON.stringify(e).length; if (e.type === EventType.RESPONSE_SUBMIT) this.logResponses++; }
+    this.logBytes = 0; this.logResponses = 0; this.held = new Map();
+    for (const e of this.log) { this.logBytes += JSON.stringify(e).length; if (e.type === EventType.RESPONSE_SUBMIT) this.logResponses++; this.held.set(eventKey(e), e.hlc); }
   }
   state() { return computeState(this.log, { identity: this.identity.address, prefer: this.pins }); }
 
@@ -501,6 +528,8 @@ export class WhisperboxClient {
     if (!def || typeof def !== "object") return { ok: false, error: "def must be an object" };
     if (def.anonymous === true && def.whitelist && def.whitelist.type !== "none") return { ok: false, error: "an anonymous form can't be members-only (that needs real addresses)" };
     const formId = lc(def.id) || this.newFormId();
+    // the id must fit the share link (FR-11, as the core)
+    if (!FORM_ID_RE.test(formId)) return { ok: false, error: "a form id is 1-128 of a-z, 0-9, '.', '_', ':' and '-', starting with a letter or digit" };
     let publicKey = C.deriveFormKey(this.identity, formId).pubHex;
     if (opts.publicKey) {
       const ck = this.cardKeys.get(formId);
@@ -660,6 +689,8 @@ export class WhisperboxClient {
     // in every signed event, so the tag linked anonymous answers to a device - review 2026-10-22, WB-5).
     const tag = "wb-" + C.randomHex(6);
     e.dev = tag; e.hlc = { ...e.hlc, dev: tag };
+    // peers refuse an event over 256 KiB: say so instead of keeping an answer nobody gets (FR-10, as the core)
+    if (!wellFormedEvent(e)) return { ok: false, error: "these answers are too long to send - shorten the longest ones" };
     this.mySubs[formId] = confirmationId;
     this.myAnswers[formId] = { answers, submittedAt, firstSubmittedAt: isEdit ? firstAt : submittedAt };   // private copy: the sealed blob only opens for the creator
     this.saveMeta();
@@ -682,7 +713,8 @@ export class WhisperboxClient {
     return { ok: true, formId: l.formId, pending: !have };
   }
   forgetForm(formId) {
-    formId = lc(formId); this.watched.delete(formId); delete this.pins[formId]; this.saveMeta(); this.emit();
+    // off this device: the link it was opened from (pin), hidden or not (FR-13, as the core's deleteLocalForm)
+    formId = lc(formId); this.watched.delete(formId); delete this.pins[formId]; this.hidden.delete(formId); this.saveMeta(); this.emit();
     return { ok: true };
   }
   /** One form at a glance (another app's card): title, status, counts. Answer counts only for
@@ -785,8 +817,7 @@ export class WhisperboxClient {
   sendReply(formId, cid, replyPub, body) {
     let sealed;
     try { sealed = C.toHex(C.sealToCreator(null, replyPub, JSON.stringify(body))); } catch { return false; }
-    this.adopt(this.buildEvent(EventType.RESPONSE_REPLY, responseReplyId(formId, cid, C.randomHex(6)), { formId, author: this.identity.address, to: cid, sealed }, true));
-    return true;
+    return this.adopt(this.buildEvent(EventType.RESPONSE_REPLY, responseReplyId(formId, cid, C.randomHex(6)), { formId, author: this.identity.address, to: cid, sealed }, true));
   }
   /** Private reply to one answer (creator / co-owner): only that respondent can read it. */
   replyToResponse(formId, confirmationId, message) {
@@ -854,6 +885,14 @@ export class WhisperboxClient {
       for (const [fid, list] of Object.entries(cv.responses)) this.enrich(st, fid, list, keys);
     }
     const missing = new Set(this.formsMissingKeys(st));
+    // Only the forms this device shows (mine, co-owned, answered, opened from a link, hidden, pinned):
+    // every form anyone published on the topic used to go to the view (FR-5/FR-7, as the core).
+    const allIds = Object.keys(st.forms);
+    for (const fid of allIds) {
+      const f = st.forms[fid];
+      if (!(f.creator === this.identity.address || this.isCoOwner(f) || this.watched.has(fid) || fid in this.mySubs || this.hidden.has(fid) || this.pins[fid] || this.answerDrafts[fid])) delete st.forms[fid];
+    }
+    st.feed = (st.feed || []).filter((id) => id in st.forms);
     let seenDirty = false, newTotal = 0;
     for (const [fid, f] of Object.entries(st.forms)) {
       const mine = f.creator === this.identity.address;
@@ -897,7 +936,7 @@ export class WhisperboxClient {
       nodeReady: this.nodeReady,
       // the sealed answers are opaque to a view and grew the snapshot with every blob (FR-3): a count
       state: (({ responses, ...rest }) => ({ ...rest, responseCount: responses.length }))(st), creatorView: cv, watched: [...this.watched],
-      pendingForms: [...this.watched].filter((id) => !st.forms[id]), mySubmissions: Object.keys(this.mySubs), hidden: [...this.hidden], drafts: Object.values(this.drafts),
+      pendingForms: (() => { const have = new Set(allIds); return [...this.watched].filter((id) => !have.has(id)); })(), mySubmissions: Object.keys(this.mySubs), hidden: [...this.hidden], drafts: Object.values(this.drafts),
       diagnostics: { ...this.diag, logSize: this.log.length },
     };
   }

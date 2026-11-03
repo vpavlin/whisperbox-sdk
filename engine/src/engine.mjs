@@ -282,6 +282,9 @@ const answerScalarOk = (v) => v === null || typeof v === "boolean" || typeof v =
 const answerValueOk = (v) => answerScalarOk(v) || answerOtherOk(v)
   || (Array.isArray(v) && v.length <= 1000 && v.every((x) => (typeof x === "number" && Number.isFinite(x)) || typeof x === "string" || answerOtherOk(x)));
 const utf8Len = (str) => { let n = 0; for (const ch of str) { const c = ch.codePointAt(0); n += c < 0x80 ? 1 : c < 0x800 ? 2 : c < 0x10000 ? 3 : 4; } return n; };
+// A respondent-chosen receipt id: 1-128 characters, else none (open-review 2026-11-02, FR-9; as the
+// C++ engine). A 100,000-byte one made receipts peers refuse. Ids are ASCII hex in practice.
+export const validConfirmationId = (c) => typeof c === "string" && c.length > 0 && utf8Len(c) <= 128;
 export function sanitizeAnswers(a) {
   const out = [];
   if (!Array.isArray(a)) return out;
@@ -328,6 +331,7 @@ export function creatorView(state, opts) {
   }
 
   const seenRespondent = new Map(); // formId → Set(respondent) — earliest HLC wins
+  const counted = new Map();        // formId → verified answers accepted so far (the cap)
 
   // Pool is HLC-ordered (fold invariant) → first accepted response per respondent
   // is the min-HLC one, on every replica. With network times: earliest network time first.
@@ -386,7 +390,7 @@ export function creatorView(state, opts) {
         // proves nothing: it doesn't take a respondent's slot, count towards the cap or edit anything
         view.responses[formId].push(timeFields({ respondent: lc(typeof dec.respondent === "string" ? dec.respondent : ""), submittedAt: dec.submittedAt ?? null,
           answers: sanitizeAnswers(dec.answers), signature: null,
-          confirmationId: typeof dec.confirmationId === "string" ? dec.confirmationId : null, hlc: blob.hlc, verified: false }));
+          confirmationId: validConfirmationId(dec.confirmationId) ? dec.confirmationId : null, hlc: blob.hlc, verified: false }));
         continue;
       }
     }
@@ -412,11 +416,12 @@ export function creatorView(state, opts) {
       if (typeof dec.replyPub === "string" && /^0[23][0-9a-fA-F]{64}$/.test(dec.replyPub)) prev.entry.replyPub = dec.replyPub.toLowerCase();
       continue;
     }
-    const meta = { entry: null, firstWall: w.wall, cid: typeof dec.confirmationId === "string" ? dec.confirmationId : null };
+    const meta = { entry: null, firstWall: w.wall, cid: validConfirmationId(dec.confirmationId) ? dec.confirmationId : null };
     seen.set(respondent, meta);
     // Answer cap: the first maxResponses (HLC order - identical on every replica) count; unverified
     // answers don't.
-    if (f.maxResponses && view.responses[formId].filter((r) => r.verified !== false).length >= f.maxResponses) { drop(view.dropped, "over-limit"); continue; }
+    // a running count, not a rescan per answer (open-review 2026-11-02, FR-3; same as the C++ engine)
+    if (f.maxResponses && (counted.get(formId) || 0) >= f.maxResponses) { drop(view.dropped, "over-limit"); continue; }
 
     const entry = {
       respondent,
@@ -434,6 +439,7 @@ export function creatorView(state, opts) {
     timeFields(entry);
     meta.entry = entry;
     view.responses[formId].push(entry);
+    counted.set(formId, (counted.get(formId) || 0) + 1);
   }
 
   return view;

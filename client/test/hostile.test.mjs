@@ -156,6 +156,7 @@ test("a sealed deep answer, a 1e300 limit and a bare-id answer are refused (FR-1
   assert.strictEqual(wellFormedFormFields({ title: "x", questions: [], maxResponses: 1e300 }), false);
   assert.strictEqual(wellFormedFormFields({ title: "x", questions: [], editWindowMinutes: 9.2e18 }), false);
   // FR-3: b knows the form from catch-up only: no creator pinned, no answering
+  b.importForm(fid);   // opened by its bare id: shown, but no creator pinned
   const bf = b.snapshot().state.forms[fid];
   assert.ok(bf.needsLink && !bf.canRespond, "needs the creator's link");
   assert.strictEqual(b.submitResponse(fid, [{ questionId: "q1", value: "x" }]).ok, false);

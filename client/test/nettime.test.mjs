@@ -47,6 +47,7 @@ test("a backdated answer the network saw after the close is out; an earlier copy
   // a later copy (re-served during catch-up) doesn't move it back
   for (const m of sent) a.ingest([m], { tsMs: N + 60_000 });
   assert.strictEqual(view().responses[fid][0].receivedAt, N + 8_000);
+  await new Promise((r) => setTimeout(r, 300));   // saved once per burst (FR-6)
   assert.ok(String(await store.get("wb-nettime")).includes(String(N + 8_000)), "kept across restarts");
 });
 

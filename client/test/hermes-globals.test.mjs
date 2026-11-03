@@ -23,7 +23,7 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   const pump = () => { while (wire.length) { const m = wire.shift(); a.ingest([m]); b.ingest([m]); } };
   const fid = a.createForm({ title: "Ünïcode ✓", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
   a.catchupRound(); b.catchupRound(); pump();                  // RBSR fingerprints (the crash site)
-  assert.ok(b.snapshot().state.forms[fid], "b reconciled a's form via RBSR");
+  assert.ok(b.state().forms[fid], "b reconciled a's form via RBSR");   // the fold: the snapshot shows only opened forms
   b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);   // answers need the creator a link names (FR-3)
   assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "žluťoučký" }]).ok); pump();
   assert.strictEqual(a.snapshot().creatorView.responses[fid][0].answers[0].value, "žluťoučký");
@@ -39,8 +39,9 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   assert.ok(d.ok && a.snapshot().drafts.length === 1);
   a.lastHousekeep = 0; a.tick(); pump();
   assert.strictEqual(a.snapshot().drafts.length, 0, "due scheduled draft published by tick");
-  const later = Object.values(b.snapshot().state.forms).find((f) => f.title === "Later");
+  const later = Object.values(b.state().forms).find((f) => f.title === "Later");
   assert.ok(later, "scheduled form reached the other device");
+  b.importForm(`whisperbox://form?id=${later.id}&by=${a.identity.address}`);
   b.saveAnswerDraft(later.id, [{ questionId: "q1", value: true }]);
   assert.strictEqual(b.snapshot().state.forms[later.id].answerDraft[0].value, true);
   const capped = a.createForm({ title: "Cap 1", maxResponses: 1, questions: [{ id: "q1", type: "boolean", text: "?", required: true }] }).formId;

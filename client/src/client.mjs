@@ -189,7 +189,7 @@ export class WhisperboxClient {
     this.nodeReady = false; this.listeners = new Set();
     this.diag = { rxRaw: 0, rxNew: 0, rxDup: 0, txTotal: 0, txErr: 0, admDropSig: 0, admDropType: 0, rbsrRx: 0, legacyReseeds: 0 };
     this.syncTries = 0; this.lastSyncAt = 0; this.lastReserveAt = 0; this.unsent = new Set();
-    this.logBytes = 0; this.logResponses = 0; this.held = new Map(); this.buckets = {};
+    this.logBytes = 0; this.logResponses = 0; this.held = new Map(); this.heldBytes = new Map(); this.buckets = {}; this.firstSeen = {};
   }
 
   // ── lifecycle ──────────────────────────────────────────────────────────────────
@@ -224,6 +224,8 @@ export class WhisperboxClient {
     // answer event id -> the earliest Logos Delivery timestamp (ms) this device saw for it (ADR 0019)
     const nt = parse(await this.store.get("wb-nettime"), {});
     this.netTimes = nt && typeof nt === "object" && !Array.isArray(nt) ? nt : {};
+    const fs = parse(await this.store.get("wb-firstseen"), {});
+    this.firstSeen = fs && typeof fs === "object" && !Array.isArray(fs) ? fs : {};
     // Form keys that came from a Keycard (not derivable from the identity): one secret per
     // form ("wb-fk-<formId>"), with the list of ids (not secret) in the plain store.
     this.cardKeys = new Map();
@@ -353,28 +355,30 @@ export class WhisperboxClient {
       const e = env.event;
       if (!wellFormedEvent(e)) { this.diag.admDropType++; return true; }
       if (e.hlc.wall > this.now() + MAX_CLOCK_LEAD_MS) { this.diag.admDropFuture = (this.diag.admDropFuture || 0) + 1; return true; }   // WB-3
-      if (!this.admit(e)) return true;
       // Answers are unsigned on the wire: a node-wide budget, and the log a cap (open-review
       // 2026-11-01, FR-3; same numbers as the core). Every copy costs, a replayed one too, and signed
-      // events have their own budget (open-review 2026-11-02, FR-2/FR-6). The rest comes on a later
-      // catch-up round.
+      // events have their own budget (2026-11-02, FR-2/FR-6), taken before the signature is checked
+      // (2026-11-03, FR-6). A held answer is never replaced (its HLC is the sender's, FR-3); a signed
+      // event's earlier copy is charged for its size (FR-1). The rest comes on a later catch-up round.
       const isResp = e.type === EventType.RESPONSE_SUBMIT;
       const key = eventKey(e);
       const held = this.held.get(key);
-      const dup = held !== undefined && compareHlc(e.hlc, held) >= 0;
+      const dup = held !== undefined && (isResp || compareHlc(e.hlc, held) >= 0);
       if (!this.takeToken(isResp ? "resp" : "sig", RESP_BUDGET)) { this.diag.admDropBudget = (this.diag.admDropBudget || 0) + 1; return true; }
-      const eBytes = dup ? 0 : JSON.stringify(e).length;
-      if (!dup && held === undefined) {
-        if (isResp ? (this.logResponses >= MAX_LOG_RESPONSES || this.logBytes + eBytes > MAX_LOG_BYTES) : this.logBytes + eBytes > MAX_LOG_BYTES + LOG_RESERVE_BYTES) { this.diag.admDropFull = (this.diag.admDropFull || 0) + 1; return true; }
-      }
-      const earlier = this.noteNetTime(e);
-      if (dup) { this.diag.rxDup++; if (earlier) this.emit(); return true; }   // known without a scan of the log
+      if (dup) { this.diag.rxDup++; if (this.noteNetTime(e)) this.emit(); return true; }   // known without a scan or a verify
+      if (!this.admit(e)) return true;
+      const eBytes = JSON.stringify(e).length;
+      const oldBytes = held !== undefined ? (this.heldBytes.get(key) || 0) : 0;
+      const grow = Math.max(0, eBytes - oldBytes);
+      if (isResp ? (this.logResponses >= MAX_LOG_RESPONSES || this.logBytes + grow > MAX_LOG_BYTES) : (grow > 0 && this.logBytes + grow > MAX_LOG_BYTES + LOG_RESERVE_BYTES)) { this.diag.admDropFull = (this.diag.admDropFull || 0) + 1; return true; }
+      this.noteNetTime(e);
       if (mergeOne(this.log, e)) {
-        if (held === undefined) { this.logBytes += eBytes; if (isResp) this.logResponses++; }
-        this.held.set(key, e.hlc);
+        this.logBytes += eBytes - oldBytes; if (held === undefined && isResp) this.logResponses++;
+        this.held.set(key, e.hlc); this.heldBytes.set(key, eBytes);
+        if (isResp && !this.firstSeen[e.id]) { this.firstSeen[e.id] = this.now(); this.saveFirstSeenSoon(); }
         this.diag.rxNew++; this.clock.receive(e.hlc); this.saveLog(); this.emit();
       }
-      else { this.diag.rxDup++; if (earlier) this.emit(); }
+      else this.diag.rxDup++;
       return true;
     }
     return false;
@@ -483,11 +487,18 @@ export class WhisperboxClient {
     if (!wellFormedEvent(e)) { this.lastError = "refused a local " + e.type + " peers would drop"; return false; }
     const key = eventKey(e);
     if (mergeOne(this.log, e)) {
-      if (!this.held.has(key)) { this.logBytes += JSON.stringify(e).length; if (e.type === EventType.RESPONSE_SUBMIT) this.logResponses++; }
-      this.held.set(key, e.hlc); this.clock.receive(e.hlc); this.saveLog();
+      const n = JSON.stringify(e).length;
+      if (!this.held.has(key) && e.type === EventType.RESPONSE_SUBMIT) this.logResponses++;
+      this.logBytes += n - (this.heldBytes.get(key) || 0);
+      this.held.set(key, e.hlc); this.heldBytes.set(key, n); this.clock.receive(e.hlc); this.saveLog();
     }
     this.broadcast(e); this.emit();
     return true;
+  }
+  // when this device first saw each answer (kept, never synced; FR-3), saved once per burst
+  saveFirstSeenSoon() {
+    if (this.firstSeenTimer) return;
+    this.firstSeenTimer = setTimeout(() => { this.firstSeenTimer = null; this.store.set("wb-firstseen", JSON.stringify(this.firstSeen)).catch?.(() => {}); }, 250);
   }
   // a token bucket per kind: perMin a minute, a burst of the same
   takeToken(kind, perMin) {
@@ -497,8 +508,12 @@ export class WhisperboxClient {
     b.t -= 1; return true;
   }
   recountLog() {
-    this.logBytes = 0; this.logResponses = 0; this.held = new Map();
-    for (const e of this.log) { this.logBytes += JSON.stringify(e).length; if (e.type === EventType.RESPONSE_SUBMIT) this.logResponses++; this.held.set(eventKey(e), e.hlc); }
+    this.logBytes = 0; this.logResponses = 0; this.held = new Map(); this.heldBytes = new Map();
+    for (const e of this.log) {
+      const n = JSON.stringify(e).length, k = eventKey(e);
+      this.logBytes += n; if (e.type === EventType.RESPONSE_SUBMIT) this.logResponses++;
+      this.held.set(k, e.hlc); this.heldBytes.set(k, n);
+    }
   }
   state() { return computeState(this.log, { identity: this.identity.address, prefer: this.pins }); }
 
@@ -874,6 +889,7 @@ export class WhisperboxClient {
       alsoForms: this.coOwnedIds(st),
       verifyResponse: (pseudo) => C.verifyInner(pseudo.payload),
       netTime: (id) => this.netTimes?.[id] ?? null,
+      localTime: (id) => this.firstSeen?.[id] ?? null,   // FR-3: first seen here, for answers with no network time
     });
   }
   snapshot() {

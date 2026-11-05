@@ -165,7 +165,7 @@ for (const layers of [1, 0]) {
       assert.ok(await until(b, () => (phone.snapshot().creatorView?.responses?.[pQ] || [])[0]?.score === 2), "JS scores the desktop's answer 2/3");
       const cidD = phone.snapshot().creatorView.responses[pQ][0].confirmationId;
       assert.ok(phone.replyToResponse(pQ, cidD, "Close!").ok);
-      assert.ok(await until(b, async () => ((await b.call("snapshot")).state.forms[pQ].myReplies || [])[0]?.message === "Close!"), "desktop opens the JS-sealed reply");
+      assert.ok(await until(b, async () => ((await b.call("formDetail", [pQ])).myReplies || [])[0]?.message === "Close!"), "desktop opens the JS-sealed reply");
 
       // 10. share links are identical on both sides
       assert.strictEqual(phone.shareUri(fA).uri, (await b.call("shareUri", [fA])).uri);

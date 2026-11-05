@@ -307,6 +307,10 @@ export function creatorView(state, opts) {
   // with none falls back to its own HLC and is marked timeVerified:false. Without netTime the view
   // is the HLC-only fold (identical on every replica; the golden vectors).
   const netTime = typeof opts.netTime === "function" ? opts.netTime : null;
+  // localTime(eventId) -> when THIS device first saw that answer (ms, > 0 if known). An answer with no
+  // network time first seen while the form was closed doesn't count, whatever its sender-chosen HLC
+  // claims (open-review 2026-11-03, FR-3; same as the C++ engine).
+  const localTime = typeof opts.localTime === "function" ? opts.localTime : null;
   const whenOf = (blob) => {
     const t = netTime ? Number(netTime(blob.id)) : NaN;
     return Number.isFinite(t) && t > 0 ? { wall: t, net: true } : { wall: Number(blob.hlc?.wall), net: false };
@@ -361,12 +365,14 @@ export function creatorView(state, opts) {
     // comparison is approximate (clock skew) — document as best-effort; the
     // original whisperbox had no close at all, so this is our stricter layer.
     // Sealed while the form was closed (any closed period, even if re-opened since).
+    const seenAt = !w.net && localTime ? Number(localTime(blob.id)) || 0 : 0;
     const spans = state.closedSpans?.[formId];
     if (spans && spans.length) {
-      if (spans.some((s) => atOrAfter(w, blob, s.from) && (s.to === null || !atOrAfter(w, blob, s.to)))) { drop(view.dropped, "form-closed"); continue; }
+      if (spans.some((s) => (atOrAfter(w, blob, s.from) && (s.to === null || !atOrAfter(w, blob, s.to)))
+        || (seenAt > 0 && seenAt >= Number(s.from?.wall) && (s.to === null || seenAt < Number(s.to?.wall))))) { drop(view.dropped, "form-closed"); continue; }
     } else if (f.status === "closed") {
       const ch = state.closeHlc?.[formId];
-      if (!ch || atOrAfter(w, blob, ch)) { drop(view.dropped, "form-closed"); continue; }
+      if (!ch || atOrAfter(w, blob, ch) || (seenAt > 0 && seenAt >= Number(ch.wall))) { drop(view.dropped, "form-closed"); continue; }
     }
     // Close-at date (expiresAt, ms): answers stamped after it don't count.
     if (f.expiresAt != null && w.wall > Number(f.expiresAt)) { drop(view.dropped, "expired"); continue; }

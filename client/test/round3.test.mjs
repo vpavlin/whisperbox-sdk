@@ -96,11 +96,15 @@ test("FR-10: an upper-case copy of a sealed answer is refused", async () => {
 test("FR-3: answers from the network have a budget", async () => {
   const { a, fid } = await pair();
   const pub = a.state().forms[fid].publicKey;
+  // seal first, ingest after: sealing 650 answers takes seconds on a busy machine, and the bucket
+  // refills 10 a second meanwhile - enough to let all 650 through and make this test flaky
+  const frames = [];
   for (let i = 0; i < 650; i++) {
     const hex = C.toHex(C.sealToCreator(null, pub, JSON.stringify({ formId: fid, n: i })));
     const ev = { v: 1, id: responseSubmitId(hex), type: "response.submit", hlc: { wall: Date.now(), ctr: 0, dev: "x" }, dev: "x", payload: { encryptedPayload: hex } };
-    a.ingest([bytes(JSON.stringify({ v: 1, type: "EVENT", event: ev }))]);
+    frames.push(bytes(JSON.stringify({ v: 1, type: "EVENT", event: ev })));
   }
+  for (const f of frames) a.ingest([f]);
   assert.ok(a.diag.admDropBudget > 0, JSON.stringify({ d: a.diag, n: a.logResponses, e: a.lastError }));
   assert.ok(a.logResponses < 650, "fewer than all 650 taken (600 at once, then 10 a second)");
 });

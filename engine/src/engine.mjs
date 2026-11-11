@@ -62,7 +62,15 @@ export function editableFields(p) {
     // editWindowMinutes after first sending it, until the creator sends a receipt
     allowEdits: p.allowEdits === true,
     editWindowMinutes: p.allowEdits === true ? (Number.isInteger(p.editWindowMinutes) && p.editWindowMinutes > 0 ? p.editWindowMinutes : 15) : null,
+    // answers per respondent (ADR 0022): 1 (the default, omitted from the view so older vectors stay
+    // byte-identical), N, or 0 = unlimited. Each answer is its own entry with its own receipt.
+    ...(maxPerRespondentOf(p) !== 1 ? { maxPerRespondent: maxPerRespondentOf(p) } : {}),
   };
+}
+/** Answers one respondent may send to a form: 1 (default), N, or 0 = unlimited (ADR 0022). */
+export function maxPerRespondentOf(f) {
+  const v = f ? f.maxPerRespondent : undefined;
+  return Number.isInteger(v) && v >= 0 && v <= 1e6 ? v : 1;
 }
 
 export function computeState(mergedLog, opts = {}) {
@@ -390,7 +398,7 @@ export function creatorView(state, opts) {
           payload: dec, pub: dec.pub ?? null, sig: dec.signature,
         };
         if (!verifyResponse(pseudo)) { drop(view.dropped, "sig-invalid"); continue; }
-      } else if (f.whitelist?.type !== "none" || f.allowEdits) { drop(view.dropped, "sig-invalid"); continue; }
+      } else if (f.whitelist?.type !== "none" || f.allowEdits || maxPerRespondentOf(f) !== 1) { drop(view.dropped, "sig-invalid"); continue; }
       else {
         // still the creator's to read and export (answers from older clients are unsigned), but it
         // proves nothing: it doesn't take a respondent's slot, count towards the cap or edit anything
@@ -410,6 +418,29 @@ export function creatorView(state, opts) {
     }
     let seen = seenRespondent.get(formId);
     if (!seen) { seen = new Map(); seenRespondent.set(formId, seen); } // BUGFIX: store back
+    // Several answers per respondent (ADR 0022): each answer is keyed by its sealed receipt id. A
+    // repeat of an id already seen is a copy, not a new answer; the respondent's cap is checked
+    // before the form's. No edits on these forms (writers refuse allowEdits with it).
+    const perResp = maxPerRespondentOf(f);
+    if (perResp !== 1) {
+      const cid = validConfirmationId(dec.confirmationId) ? dec.confirmationId : null;
+      if (!cid) { drop(view.dropped, "no-answer-id"); continue; }
+      let mine = seen.get(respondent);
+      if (!mine) { mine = { n: 0, cids: new Set() }; seen.set(respondent, mine); }
+      if (mine.cids.has(cid)) { drop(view.dropped, "duplicate-answer"); continue; }
+      mine.cids.add(cid);
+      if (perResp > 0 && mine.n >= perResp) { drop(view.dropped, "over-respondent-limit"); continue; }
+      if (f.maxResponses && (counted.get(formId) || 0) >= f.maxResponses) { drop(view.dropped, "over-limit"); continue; }
+      mine.n += 1;
+      const entry = { respondent, submittedAt: dec.submittedAt ?? null, answers: sanitizeAnswers(dec.answers),
+        signature: dec.signature ?? null, confirmationId: cid, hlc: blob.hlc, answerNo: mine.n };
+      if (typeof dec.replyPub === "string" && /^0[23][0-9a-fA-F]{64}$/.test(dec.replyPub)) entry.replyPub = dec.replyPub.toLowerCase();
+      if (verifyResponse) entry.verified = true;
+      timeFields(entry);
+      view.responses[formId].push(entry);
+      counted.set(formId, (counted.get(formId) || 0) + 1);
+      continue;
+    }
     const prev = seen.get(respondent);
     if (prev) {
       // A later response from the same respondent: an EDIT, if the form allows it, inside

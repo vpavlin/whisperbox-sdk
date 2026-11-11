@@ -141,6 +141,23 @@ console.log(`wrote fixtures: ${merged.length} merged events, ${Object.keys(state
     sign(evResponseReply({ ...at(9500), formId: "shared", author: C.address, to: "c-reply", sealed: "01" + "cd".repeat(70), nonce: "r1" })),
     { ...evResponseReply({ ...at(9600), formId: "shared", author: CO.address, to: "c-reply", sealed: "01" + "ef".repeat(70), nonce: "r2" }), ...signEvent(CO, evResponseReply({ ...at(9600), formId: "shared", author: CO.address, to: "c-reply", sealed: "01" + "ef".repeat(70), nonce: "r2" })) },
     { ...evResponseReply({ ...at(9700), formId: "shared", author: R4.address, to: "c-reply", sealed: "01" + "aa".repeat(70), nonce: "r3" }), ...signEvent(R4, evResponseReply({ ...at(9700), formId: "shared", author: R4.address, to: "c-reply", sealed: "01" + "aa".repeat(70), nonce: "r3" })) },
+    // ── several answers per respondent (ADR 0022): keyed by receipt id, per-person cap, then the form's ──
+    form("multi", { maxPerRespondent: 3 }),
+    signedResp("multi", R1, 11000, true, "m-a"),
+    signedResp("multi", R1, 11050, false, "m-a"),                    // same receipt id again: duplicate-answer
+    signedResp("multi", R1, 11100, false, "m-b"),
+    signedResp("multi", R2, 11150, true, "m-e"),
+    signedResp("multi", R1, 11200, true, "m-c"),                     // R1's 3rd: counts
+    signedResp("multi", R1, 11300, false, "m-d"),                    // R1's 4th: over-respondent-limit
+    signedResp("multi", R2, 11350, false, "m-f"),
+    unsignedResp("multi", R5.address, 11400),                         // unsigned: sig-invalid on these forms
+    (() => { const r = { formId: "multi", respondent: R4.address, submittedAt: 11450, answers: [{ questionId: "q1", value: true }] };
+      return sealResp("multi", { ...r, signature: signInner(R4, r), pub: R4.pubHex }, 11450); })(),   // no receipt id: no-answer-id
+    sign(evResponseConfirm({ ...at(11500), formId: "multi", confirmationId: "m-b", author: C.address })),
+    form("unlimited", { maxPerRespondent: 0, maxResponses: 4 }),
+    signedResp("unlimited", R1, 12000, true, "u-1"), signedResp("unlimited", R1, 12100, true, "u-2"),
+    signedResp("unlimited", R2, 12200, true, "u-3"), signedResp("unlimited", R1, 12300, false, "u-4"),
+    signedResp("unlimited", R2, 12400, false, "u-5"),                // the form's 5th: over-limit
   ];
   const log = []; for (const e of evs) mergeOne(log, e);
   const st = computeState(log, { identity: C.address });

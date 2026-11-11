@@ -14,7 +14,7 @@ import { Clock, MAX_HLC_CTR, compareHlc } from "../../contract/src/hlc.mjs";
 import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId, formReopenId, formUpdateId, formCoOwnerId, responseConfirmBatchId, responseReplyId } from "../../contract/src/events.mjs";
 import * as C from "../../contract/src/crypto-portable.mjs";
 import { validateAnswers, emptyAnswer as emptyAnswerOf, scoreAnswers } from "../../contract/src/answers.mjs";
-import { computeState, creatorView } from "../../engine/src/engine.mjs";
+import { computeState, creatorView, maxPerRespondentOf } from "../../engine/src/engine.mjs";
 import { buildInitial, respond } from "../../loam-sync-pkg/dist/catchup.js";
 
 export { TOPIC };
@@ -50,7 +50,15 @@ function editableFromDef(def, sealPub = "") {
     // quiz: the answer key travels sealed to the form key (only creator + co-owners read it)
     ...(quiz && sealPub ? { quizKey: C.toHex(C.sealToCreator(null, sealPub, JSON.stringify(quiz))) } : {}),
     ...(def.allowEdits === true ? { allowEdits: true, editWindowMinutes: Number.isInteger(def.editWindowMinutes) && def.editWindowMinutes > 0 ? def.editWindowMinutes : 15 } : {}),
+    // answers per respondent (ADR 0022): omitted at the default 1; 0 = unlimited
+    ...(maxPerRespondentOf(def) !== 1 ? { maxPerRespondent: maxPerRespondentOf(def) } : {}),
   };
+}
+// Writers refuse combinations the protocol doesn't define (same as the core).
+function defConflict(def) {
+  if (def.anonymous === true && def.whitelist && def.whitelist.type !== "none") return "an anonymous form can't be members-only (that needs real addresses)";
+  if (def.allowEdits === true && maxPerRespondentOf(def) !== 1) return "a form that takes several answers per person can't also allow edits (each answer is final)";
+  return "";
 }
 function emptyAnswer(v) {
   return v === null || v === undefined || (typeof v === "string" && v.trim() === "") || (Array.isArray(v) && v.length === 0);
@@ -115,7 +123,7 @@ function scaleOk(q) {
 export const wellFormedFormFields = (f) => isObj(f)
   && (!("questions" in f) || f.questions === null || (Array.isArray(f.questions) && f.questions.length <= 500 && f.questions.every(wellFormedQuestion)))
   && optStr(f, "title") && optStr(f, "description") && optStr(f, "thankYou") && optStr(f, "quizKey", 4096)
-  && optNumIn(f, "expiresAt", 0, MAX_TIME_MS) && optNumIn(f, "maxResponses", 0, 1e6) && optNumIn(f, "editWindowMinutes", 0, 525600) && optNumIn(f, "createdAt", 0, MAX_TIME_MS)
+  && optNumIn(f, "expiresAt", 0, MAX_TIME_MS) && optNumIn(f, "maxResponses", 0, 1e6) && optNumIn(f, "editWindowMinutes", 0, 525600) && optNumIn(f, "createdAt", 0, MAX_TIME_MS) && optNumIn(f, "maxPerRespondent", 0, 1e6)
   && ["showResponseCount", "shuffleQuestions", "anonymous", "allowEdits"].every((b) => optBool(f, b))
   && (!("whitelist" in f) || f.whitelist === null || (isObj(f.whitelist) && optStr(f.whitelist, "type", 32) && optStr(f.whitelist, "value", 1 << 20)));
 /** One event, serialized (open-review FR-6; Logos Delivery carries ~150 KB). Same as the C++ core. */
@@ -541,7 +549,7 @@ export class WhisperboxClient {
   /** opts.publicKey: seal to a key stored with addFormKey (Keycard) instead of the derived one. */
   createForm(def, opts = {}) {
     if (!def || typeof def !== "object") return { ok: false, error: "def must be an object" };
-    if (def.anonymous === true && def.whitelist && def.whitelist.type !== "none") return { ok: false, error: "an anonymous form can't be members-only (that needs real addresses)" };
+    { const c = defConflict(def); if (c) return { ok: false, error: c }; }
     const formId = lc(def.id) || this.newFormId();
     // the id must fit the share link (FR-11, as the core)
     if (!FORM_ID_RE.test(formId)) return { ok: false, error: "a form id is 1-128 of a-z, 0-9, '.', '_', ':' and '-', starting with a letter or digit" };
@@ -568,7 +576,7 @@ export class WhisperboxClient {
   updateForm(formId, def) {
     formId = lc(formId);
     if (!def || typeof def !== "object") return { ok: false, error: "def must be an object" };
-    if (def.anonymous === true && def.whitelist && def.whitelist.type !== "none") return { ok: false, error: "an anonymous form can't be members-only (that needs real addresses)" };
+    { const c = defConflict(def); if (c) return { ok: false, error: c }; }
     const f = this.state().forms[formId];
     if (!f) return { ok: false, error: "unknown form" };
     if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
@@ -659,6 +667,19 @@ export class WhisperboxClient {
     this.adopt(this.buildEvent(EventType.RESPONSE_CONFIRM, responseConfirmId(formId, cid), { formId, confirmationId: cid, author: this.identity.address }, true));
     return { ok: true, confirmationId: cid };
   }
+  /** Receipt for ONE answer by its receipt id: several-answer forms have one per answer (ADR 0022). */
+  confirmAnswer(formId, confirmationId) {
+    formId = lc(formId);
+    const st = this.state();
+    const f = st.forms[formId];
+    if (!f) return { ok: false, error: "unknown form" };
+    if (f.creator !== this.identity.address && !this.isCoOwner(f)) return { ok: false, error: "not the creator or a co-owner" };
+    const r = (this.decrypt(st).responses[formId] || []).find((x) => confirmIdOf(x, formId) === confirmationId);
+    if (!r) return { ok: false, error: "no decrypted answer with that receipt id" };
+    if (r.verified === false) return { ok: false, error: "that answer isn't signed by the address it names, so it can't get a receipt" };
+    this.adopt(this.buildEvent(EventType.RESPONSE_CONFIRM, responseConfirmId(formId, confirmationId), { formId, confirmationId, author: this.identity.address }, true));
+    return { ok: true, confirmationId };
+  }
   submitResponse(formId, answers) {
     formId = lc(formId);
     if (!Array.isArray(answers)) return { ok: false, error: "answers must be an array of {questionId,value}" };
@@ -669,7 +690,11 @@ export class WhisperboxClient {
     // Answer edits (same rule as the creator's view): within the window after the FIRST
     // answer, before the creator's receipt; reuses the receipt id; always signed.
     let isEdit = false, firstAt = 0;
-    if (formId in this.mySubs) {
+    const perResp = maxPerRespondentOf(f);   // ADR 0022: several answers per respondent, each final
+    const myCount = formId in this.mySubs ? 1 + ((this.myAnswers[formId]?.earlier || []).length) : 0;
+    if (perResp !== 1 && myCount > 0) {
+      if (perResp > 0 && myCount >= perResp) return { ok: false, error: perResp === 1 ? "you already answered this form" : `this form takes at most ${perResp} answers from one person` };
+    } else if (formId in this.mySubs) {
       if (!f.allowEdits) return { ok: false, error: "you already answered this form" };
       firstAt = this.myAnswers[formId]?.firstSubmittedAt ?? this.myAnswers[formId]?.submittedAt ?? 0;
       const cid0 = this.mySubs[formId];
@@ -706,8 +731,12 @@ export class WhisperboxClient {
     e.dev = tag; e.hlc = { ...e.hlc, dev: tag };
     // peers refuse an event over 256 KiB: say so instead of keeping an answer nobody gets (FR-10, as the core)
     if (!wellFormedEvent(e)) return { ok: false, error: "these answers are too long to send - shorten the longest ones" };
+    // the answers sent before (several-answer forms): kept, newest last; the latest is the main entry
+    const earlier = perResp !== 1 && myCount > 0 && this.myAnswers[formId]
+      ? [...(this.myAnswers[formId].earlier || []), { answers: this.myAnswers[formId].answers, submittedAt: this.myAnswers[formId].submittedAt, confirmationId: this.mySubs[formId] || null }]
+      : null;
     this.mySubs[formId] = confirmationId;
-    this.myAnswers[formId] = { answers, submittedAt, firstSubmittedAt: isEdit ? firstAt : submittedAt };   // private copy: the sealed blob only opens for the creator
+    this.myAnswers[formId] = { answers, submittedAt, firstSubmittedAt: isEdit ? firstAt : submittedAt, ...(earlier ? { earlier } : {}) };   // private copy: the sealed blob only opens for the creator
     this.saveMeta();
     if (this.answerDrafts[formId]) { delete this.answerDrafts[formId]; this.saveDrafts(); }
     this.adopt(e);
@@ -865,19 +894,27 @@ export class WhisperboxClient {
     }
     return { ok: true, sent, skipped };
   }
+  /** Every receipt id this device answered a form with: the latest, then earlier ones (ADR 0022). */
+  myCidsFor(fid) {
+    const out = [];
+    if (this.mySubs[fid]) out.push(this.mySubs[fid]);
+    for (const e of this.myAnswers[fid]?.earlier || []) if (e && e.confirmationId) out.push(e.confirmationId);
+    return out;
+  }
   myRepliesFor(fid, f) {
-    const cid = this.mySubs[fid];
-    if (!cid || !(f.replies || []).length) return null;
+    const cids = new Set(this.myCidsFor(fid));
+    if (!cids.size || !(f.replies || []).length) return null;
     this._replies = this._replies || new Map();
-    let rk = null; const out = [];
+    const rks = new Map(); const out = [];
     for (const r of f.replies) {
-      if (r.to !== cid) continue;
+      if (!cids.has(r.to)) continue;
       if (!this._replies.has(r.sealed)) {
-        rk = rk || C.deriveReplyKey(this.identity, fid, cid);
+        if (!rks.has(r.to)) rks.set(r.to, C.deriveReplyKey(this.identity, fid, r.to));
+        const rk = rks.get(r.to);
         let b = null; try { const txt = C.utf8Decode(C.eciesOpen(rk, r.sealed)); b = jsonTooDeep(txt, MAX_JSON_DEPTH) ? null : JSON.parse(txt); } catch { b = null; }
         this._replies.set(r.sealed, b && typeof b === "object" && !Array.isArray(b) ? b : null);
       }
-      const b = this._replies.get(r.sealed); if (b) out.push(b);
+      const b = this._replies.get(r.sealed); if (b) out.push(cids.size > 1 ? { ...b, to: r.to } : b);   // several answers: which one
     }
     return out.length ? out : null;
   }
@@ -925,7 +962,14 @@ export class WhisperboxClient {
       Object.assign(f, {
         contested, pinnedCreator: pin || null, linkMismatch, needsLink, mine, mySubmitted: submitted,
         myConfirmed: submitted && (f.confirmations || []).includes(cid), allowed,
-        canRespond: trusted && !mine && !submitted && allowed && f.status === "open" && !!f.publicKey,
+        // ADR 0022: a several-answer form stays answerable until this person's cap (0 = none)
+        ...(() => {
+          const per = maxPerRespondentOf(f);
+          const n = submitted ? 1 + ((this.myAnswers[fid]?.earlier || []).length) : 0;
+          const room = per === 1 ? !submitted : (per === 0 || n < per);
+          return { canRespond: trusted && !mine && room && allowed && f.status === "open" && !!f.publicKey,
+            ...(per !== 1 ? { myAnswerCount: n, myReceipts: this.myCidsFor(fid).filter((c) => (f.confirmations || []).includes(c)).length } : {}) };
+        })(),
         // mine, but no key here to open its answers (Keycard form on a new install): tap to restore
         keyMissing: missing.has(fid), keycard: this.cardKeys.has(fid),
         hidden: this.hidden.has(fid), ...(this.myAnswers[fid] ? { myAnswers: this.myAnswers[fid] } : {}),

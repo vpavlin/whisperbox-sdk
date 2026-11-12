@@ -70,3 +70,23 @@ test("an ordinary form is unchanged: one answer, no new fields", async () => {
   assert.ok(!f.canRespond && !("myAnswerCount" in f));
   assert.ok(!b.submitResponse(fid, ans(false)).ok);
 });
+
+test("ADR 0023: form files - export, open offline, refuse tampered or padded files", async () => {
+  const { a } = await pair();
+  const fid = a.createForm({ title: "Shipped", questions: [{ id: "q1", type: "boolean", text: "ok?", required: true }] }).formId;
+  const ex = a.exportForm(fid);
+  assert.ok(ex.ok && JSON.parse(ex.file).events[0].type === "form.publish");
+  const lone = new WhisperboxClient({ store: mem(), send: async () => {} });
+  await lone.init();
+  const fj = JSON.parse(ex.file);
+  const tam = JSON.parse(ex.file); tam.events[0].payload.title = "evil";
+  assert.ok(!lone.importFormFile(JSON.stringify(tam)).ok, "tampered");
+  const pad = JSON.parse(ex.file); pad.events.push({ ...fj.events[0], type: "response.submit" });
+  assert.ok(!lone.importFormFile(JSON.stringify(pad)).ok, "padded");
+  assert.ok(!lone.importFormFile("{}").ok);
+  const im = lone.importFormFile(ex.file);
+  assert.ok(im.ok && !im.pending && im.formId === fid);
+  const f = lone.snapshot().state.forms[fid];
+  assert.ok(f.pinnedCreator === a.identity.address && f.canRespond);
+  assert.ok(lone.submitResponse(fid, ans(true)).ok);
+});

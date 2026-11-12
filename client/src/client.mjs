@@ -756,6 +756,38 @@ export class WhisperboxClient {
     this.emit();
     return { ok: true, formId: l.formId, pending: !have };
   }
+  /** A form as a file (ADR 0023): the creator's signed publish + updates, to ship inside another app. */
+  exportForm(formId) {
+    formId = lc(formId);
+    const f = this.state().forms[formId];
+    if (!f) return { ok: false, error: "unknown form" };
+    const pub = this.log.find((e) => e.type === EventType.FORM_PUBLISH && e.id === "form:" + formId && lc(e.payload?.creator ?? "") === f.creator);
+    if (!pub) return { ok: false, error: "this device doesn't hold the form's signed definition yet" };
+    const ups = this.log.filter((e) => e.type === EventType.FORM_UPDATE && lc(e.payload?.formId ?? "") === formId && lc(e.payload?.author ?? "") === f.creator);
+    const file = { whisperbox: "form", v: 1, formId, creator: f.creator, title: f.title || "", link: `whisperbox://form?id=${formId}&by=${f.creator}`, events: [pub, ...ups] };
+    return { ok: true, formId, file: JSON.stringify(file, null, 2) };
+  }
+  /** Open a form from such a file: every event checked as if from the network, the creator pinned (as the core). */
+  importFormFile(text) {
+    let file = null;
+    try { file = jsonTooDeep(String(text), MAX_JSON_DEPTH) ? null : JSON.parse(String(text)); } catch { file = null; }
+    if (!file || typeof file !== "object" || file.whisperbox !== "form" || !Array.isArray(file.events) || !file.events.length || file.events.length > 64) return { ok: false, error: "that isn't a WhisperBox form file" };
+    if (file.v !== 1) return { ok: false, error: "this form file is from a newer WhisperBox - update it" };
+    const pub = file.events[0];
+    if (!wellFormedEvent(pub) || pub.type !== EventType.FORM_PUBLISH || !C.verifyEvent(pub)) return { ok: false, error: "the form in this file isn't signed by its creator" };
+    const formId = lc(pub.payload.id ?? ""), creator = lc(pub.payload.creator ?? "");
+    if (!FORM_ID_RE.test(formId) || !/^0x[0-9a-f]{40}$/.test(creator) || pub.id !== "form:" + formId) return { ok: false, error: "the form in this file is malformed" };
+    for (const e of file.events.slice(1))
+      if (!wellFormedEvent(e) || e.type !== EventType.FORM_UPDATE || lc(e.payload?.formId ?? "") !== formId || lc(e.payload?.author ?? "") !== creator || !C.verifyEvent(e))
+        return { ok: false, error: "this file carries something other than its creator's form - refusing it" };
+    const r = this.importForm(`whisperbox://form?id=${formId}&by=${creator}`);
+    if (!r.ok) return r;
+    // through the network's admission path (shape, budget, signature, caps)
+    this.ingest(file.events.map((e) => C.utf8Encode(JSON.stringify({ v: 1, type: "EVENT", event: e }))));
+    const have = this.state().forms[formId]?.creator === creator;
+    this.emit();
+    return { ok: true, formId, creator, pending: !have };
+  }
   forgetForm(formId) {
     // off this device: the link it was opened from (pin), hidden or not (FR-13, as the core's deleteLocalForm)
     formId = lc(formId); this.watched.delete(formId); delete this.pins[formId]; this.hidden.delete(formId); this.saveMeta(); this.emit();

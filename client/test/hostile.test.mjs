@@ -65,7 +65,7 @@ test("answer tags are random, links that can't be valid are refused", async () =
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const m = wire.shift(); a.ingest([m]); b.ingest([m]); } };
   const fid = a.createForm({ title: "tags", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
-  a.catchupRound(); b.catchupRound(); pump();
+  /* wire v2: the creator sent the form state on create */ pump();
   b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);   // answers need the creator a link names (FR-3)
   assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "x" }]).ok); pump();
   const resp = a.log.find((e) => e.type === "response.submit");
@@ -106,7 +106,7 @@ test("deep JSON, huge HLC counters, off-curve form keys are refused; the clock s
   assert.strictEqual(C.validPubPoint(x.pubHex), true);
 });
 
-test("an empty ids frame, repeated, serves each event once (FR-3)", async () => {
+test("v1 catch-up frames are ignored: nobody serves anybody (ADR 0024)", async () => {
   const sent = [];
   let t = 1_800_000_000_000;
   const a = new WhisperboxClient({ store: mem(), send: async (m) => { sent.push(m); }, now: () => t });
@@ -114,12 +114,8 @@ test("an empty ids frame, repeated, serves each event once (FR-3)", async () => 
   for (let i = 0; i < 3; i++) a.createForm({ title: "f" + i, questions: [{ id: "q1", type: "text", text: "?" }] });
   sent.length = 0;
   for (let i = 0; i < 20; i++) a.ingest([bytes('{"v":2,"t":"ids","from":"evil","ids":[]}')]);
-  const events = sent.map((m) => { try { return JSON.parse(new TextDecoder().decode(m)); } catch { return null; } }).filter((x) => x && x.type === "EVENT");
-  assert.ok(events.length > 0 && events.length <= a.log.length, `served ${events.length} for 20 frames, log ${a.log.length}`);
-  assert.ok(a.diag.serveSkipped > 0);
-  t += 3000; sent.length = 0;
-  a.ingest([bytes('{"v":2,"t":"ids","from":"peer","ids":[]}')]);
-  assert.ok(sent.length > 0, "after the window a new asker is served again");
+  a.ingest([bytes('{"v":1,"type":"SYNC_REQ","from":"evil"}')]);
+  assert.strictEqual(sent.length, 0, "nothing sent for v1 catch-up frames");
 });
 
 test("a stored log with an unsigned close loads without it (FR-7)", async () => {
@@ -143,7 +139,7 @@ test("a sealed deep answer, a 1e300 limit and a bare-id answer are refused (FR-1
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const [from, m] = wire.shift(); (from === "a" ? b : a).ingest([m]); } };
   const fid = a.createForm({ title: "deep target", questions: [{ id: "q1", type: "text", text: "?" }] }).formId;
-  a.catchupRound(); b.catchupRound(); pump(); pump();
+  /* wire v2: the creator sent the form state on create */ pump(); pump();
   const pub = a.snapshot().state.forms[fid].publicKey;
   // FR-1: sealed to the form's public key, 50,000 deep inside
   const pt = `{"formId":"${fid}","respondent":"0x${"9".repeat(40)}","answers":[],"signature":null,"x":${"[".repeat(50000)}${"]".repeat(50000)}}`;

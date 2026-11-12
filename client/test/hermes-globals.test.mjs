@@ -22,7 +22,7 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const m = wire.shift(); a.ingest([m]); b.ingest([m]); } };
   const fid = a.createForm({ title: "Ünïcode ✓", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
-  a.catchupRound(); b.catchupRound(); pump();                  // RBSR fingerprints (the crash site)
+  /* wire v2: the creator sent the form state on create */ pump();                  // RBSR fingerprints (the crash site)
   assert.ok(b.state().forms[fid], "b reconciled a's form via RBSR");   // the fold: the snapshot shows only opened forms
   b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);   // answers need the creator a link names (FR-3)
   assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "žluťoučký" }]).ok); pump();

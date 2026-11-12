@@ -17,7 +17,7 @@ async function pair() {
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const [from, m] = wire.shift(); (from === "a" ? b : a).ingest([m]); } };
   const fid = a.createForm({ title: "r3", questions: [{ id: "q", type: "text", text: "?" }] }).formId;
-  a.catchupRound(); b.catchupRound(); pump(); pump();
+  /* wire v2: the creator sent the form state on create */ pump(); pump();
   return { a, b, fid, pump };
 }
 // an unsigned answer sealed to the form's key, as any peer can send one

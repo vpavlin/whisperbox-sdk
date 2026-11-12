@@ -18,6 +18,13 @@ import { computeState, creatorView, maxPerRespondentOf } from "../../engine/src/
 import { buildInitial, respond } from "../../loam-sync-pkg/dist/catchup.js";
 
 export { TOPIC };
+// ── wire v2 (ADR 0024): every form lives on one of 16 bucket topics (same as the core's formTopic) ──
+export const WIRE_SHARD = "/waku/2/rs/2/1";
+export function wireTopicFor(formId) {
+  return "/whisperbox/2/form-" + C.sha256Hex("whisperbox.bucket.v2" + String(formId).toLowerCase())[0] + "/proto";
+}
+export const isWireTopic = (t) => typeof t === "string" && t.startsWith("/whisperbox/2/form-");
+const formIdOfEvent = (e) => (e?.type === EventType.FORM_PUBLISH ? lc(e?.payload?.id ?? "") : lc(e?.payload?.formId ?? ""));
 const lc = (s) => String(s ?? "").toLowerCase();
 const isHexAddr = (s) => /^0x[0-9a-f]{40}$/.test(s);
 const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -197,6 +204,13 @@ export class WhisperboxClient {
     this.nodeReady = false; this.listeners = new Set();
     this.diag = { rxRaw: 0, rxNew: 0, rxDup: 0, txTotal: 0, txErr: 0, admDropSig: 0, admDropType: 0, rbsrRx: 0, legacyReseeds: 0 };
     this.syncTries = 0; this.lastSyncAt = 0; this.lastReserveAt = 0; this.unsent = new Set();
+    // wire v2 (ADR 0024): send(bytes, topic); join(topics) and pull() (a Store pull of joined topics)
+    // come from the host's transport. Time can be shrunk for tests (o.minuteMs).
+    this.joinHook = o.join || null; this.pullHook = o.pull || null;
+    this.minute = o.minuteMs || 60000; this.perEpoch = o.msgsPerEpoch || 10; this.republishMs = o.republishMs || 0;
+    this.joined = new Set(); this.outQ = []; this.outSeq = 0; this.rlnTokens = this.perEpoch; this.rlnAt = 0;
+    this.formSentAt = {}; this.formClosedSends = {}; this.askSentAt = {}; this.askCount = {}; this.askAnsweredAt = {};
+    this.lastPullRound = 0;
     this.logBytes = 0; this.logResponses = 0; this.held = new Map(); this.heldBytes = new Map(); this.buckets = {}; this.firstSeen = {};
   }
 
@@ -246,7 +260,7 @@ export class WhisperboxClient {
   /** Call when the transport is up (and again after any reconnect). */
   onConnected() {
     this.nodeReady = true; this.syncTries = 0; this.lastSyncAt = 0;
-    this.requestSync(); this.catchupRound(); this.emit();
+    this.joined.clear(); this.syncTopics(); this.pullAll(); this.drain(); this.emit();
   }
   onDisconnected() { this.nodeReady = false; this.emit(); }
   /** Drive from a ~1s timer: catch-up at 3s/10s/25s after connect, then every 60s;
@@ -256,14 +270,9 @@ export class WhisperboxClient {
   }
   _tick() {
     if (!this.nodeReady) return;
-    const delays = [3000, 10000, 25000];
-    const delay = this.syncTries >= 1 && this.syncTries <= 3 ? delays[this.syncTries - 1] : 60000;
-    if (this.now() - this.lastSyncAt >= delay) {
-      if (this.syncTries <= 3) this.requestSync(); else { this.lastSyncAt = this.now(); this.syncTries++; }
-      this.catchupRound();
-    }
-    if (this.unsent.size) for (const id of [...this.unsent]) { const e = this.log.find((x) => eventKey(x) === id); this.unsent.delete(id); if (e) this.broadcast(e); }
-    if (this.now() - this.lastHousekeep >= 5000) { this.lastHousekeep = this.now(); this.housekeeping(); }
+    // wire v2 (ADR 0024): no catch-up rounds; the queue drains within the RLN budget
+    this.drain();
+    if (this.now() - this.lastHousekeep >= Math.min(5000, this.minute / 12)) { this.lastHousekeep = this.now(); this.housekeeping(); this.wireSchedule(); }
   }
   /** Publish due scheduled drafts; close my forms at their answer cap / end date; send
    *  receipts for forms with automatic receipts. Same rules as the desktop core. */
@@ -287,27 +296,143 @@ export class WhisperboxClient {
   emit() { for (const fn of this.listeners) { try { fn(); } catch { /* listener */ } } }
 
   // ── wire ───────────────────────────────────────────────────────────────────────
-  async sendEnvelope(obj, key) {
-    try { await this.sendRaw(C.utf8Encode(JSON.stringify(obj))); this.diag.txTotal++; return true; }
-    catch { this.diag.txErr++; if (key) this.unsent.add(key); return false; }
+  async sendEnvelope(obj, key, topic) {
+    try { await this.sendRaw(C.utf8Encode(JSON.stringify(obj)), topic); this.diag.txTotal++; return true; }
+    catch { this.diag.txErr++; return false; }
   }
-  broadcast(e) { return this.sendEnvelope({ v: 1, type: "EVENT", event: e }, eventKey(e)); }
-  requestSync() {
-    this.sendEnvelope({ v: 1, type: "SYNC_REQ", from: this.deviceId, rbsr: true });
-    this.lastSyncAt = this.now(); this.syncTries++;
+  /** Form-state events go out as the whole form state in one message (ADR 0024). */
+  broadcast(e) {
+    if (e.type === EventType.RESPONSE_SUBMIT) return false;   // answers: sendEvents with their form
+    const fid = formIdOfEvent(e);
+    if (!fid) return false;
+    this.publishFormState(fid, e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.RESPONSE_REPLY ? 2 : 3);
+    return true;
   }
-  catchupRound() {
+  relevantForms() {
+    const out = new Set([...this.watched, ...Object.keys(this.mySubs), ...Object.keys(this.pins), ...Object.keys(this.answerDrafts), ...Object.keys(this.myAnswers)]);
+    const st = this.state();
+    for (const f of Object.values(st.forms)) if (f.creator === this.identity?.address || this.isCoOwner(f)) out.add(f.id);
+    return out;
+  }
+  syncTopics() {
     if (!this.nodeReady) return;
-    this.sendEnvelope(buildInitial(this.log.map((e) => ({ id: eventKey(e) })), this.deviceId));
+    const fresh = [];
+    for (const fid of this.relevantForms()) { const t = wireTopicFor(fid); if (!this.joined.has(t)) { this.joined.add(t); fresh.push(t); } }
+    if (fresh.length) { try { this.joinHook?.(fresh); } catch { /* host */ } this.pullAll(); }
   }
-
+  pullAll() {
+    this.lastPullRound = this.now();
+    if (!this.pullHook || !this.nodeReady) return;
+    try { Promise.resolve(this.pullHook()).then(() => this.emit(), () => {}); } catch { /* host */ }
+  }
+  // One queue for everything sent, within the node's RLN budget (perEpoch per 600 s; default 10).
+  // Lower prio = sooner: 1 answer, 2 receipt/reply, 3 form change / ASK answer, 4 ASK, 5 re-publish,
+  // 6 answer retry. The same key queued again replaces the queued message.
+  enqueue(prio, topic, env, key) {
+    const q = key ? this.outQ.find((m) => m.key === key) : null;
+    if (q) { q.env = env; q.topic = topic; q.prio = Math.min(q.prio, prio); }
+    else this.outQ.push({ prio, seq: this.outSeq++, topic, env, key });
+    this.drain();
+  }
+  drain() {
+    if (!this.nodeReady || !this.outQ.length) return;
+    const now = this.now();
+    if (!this.rlnAt) this.rlnAt = now;
+    this.rlnTokens = Math.min(this.perEpoch, this.rlnTokens + ((now - this.rlnAt) * this.perEpoch) / 600000);
+    this.rlnAt = now;
+    while (this.rlnTokens >= 1 && this.outQ.length) {
+      let bi = 0;
+      for (let i = 1; i < this.outQ.length; i++) { const a = this.outQ[i], b = this.outQ[bi]; if (a.prio < b.prio || (a.prio === b.prio && a.seq < b.seq)) bi = i; }
+      const m = this.outQ.splice(bi, 1)[0];
+      this.rlnTokens -= 1;
+      this.sendEnvelope(m.env, m.key, m.topic).then((ok) => { if (!ok) { this.rlnTokens = Math.min(this.perEpoch, this.rlnTokens + 1); this.outQ.push(m); } });
+    }
+  }
+  sendEvents(formId, events, prio, key) {
+    const MAX = 120000; let chunk = [], bytes = 0, part = 0;
+    const flush = () => { if (!chunk.length) return; this.enqueue(prio, wireTopicFor(formId), { v: 2, type: "EVENTS", events: chunk }, part ? key + "#" + part : key); part++; chunk = []; bytes = 0; };
+    for (const e of events) { const n = JSON.stringify(e).length; if (bytes + n > MAX) flush(); chunk.push(e); bytes += n; }
+    flush();
+  }
+  /** The form's state as the creator side knows it: publish, edits, close/re-open, co-owners, receipts, replies. */
+  publishFormState(formId, prio) {
+    const f = this.state().forms[formId];
+    if (!f) return;
+    const authors = new Set([f.creator, ...((f.coOwners || []).map((c) => lc(c.address || "")))]);
+    const evs = [];
+    for (const e of this.log) {
+      if (e.type === EventType.RESPONSE_SUBMIT || formIdOfEvent(e) !== formId) continue;
+      const author = lc(e.type === EventType.FORM_PUBLISH ? e.payload.creator : e.payload.author || "");
+      if (e.type === EventType.FORM_PUBLISH ? author !== f.creator : !authors.has(author)) continue;
+      if (e.type === EventType.FORM_PUBLISH) evs.unshift(e); else evs.push(e);
+    }
+    if (!evs.length) return;
+    this.syncTopics();
+    this.formSentAt[formId] = this.now();
+    this.sendEvents(formId, evs, prio, "form:" + formId);
+  }
+  onAsk(env) {
+    const fid = typeof env.formId === "string" ? lc(env.formId) : "";
+    if (!fid || fid.length > 128) return;
+    const f = this.state().forms[fid];
+    if (!f || !(f.creator === this.identity?.address || this.isCoOwner(f))) return;   // only the creator side answers
+    if (this.askAnsweredAt[fid] && this.now() - this.askAnsweredAt[fid] < 10 * this.minute) return;
+    this.askAnsweredAt[fid] = this.now();
+    this.publishFormState(fid, 3);
+  }
+  /** The schedule (ADR 0024): hourly re-publish (creator), ASK for missing forms, answer retries until the receipt. */
+  wireSchedule() {
+    if (!this.nodeReady) return;
+    this.syncTopics();
+    const now = this.now(), minute = this.minute, hour = this.republishMs || 60 * minute;
+    const st = this.state();
+    for (const f of Object.values(st.forms)) {
+      if (f.creator !== this.identity?.address) continue;
+      let h = 0; for (const c of f.id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+      const every = hour + (hour * ((h % 21) - 10)) / 100;
+      const closed = f.status !== "open";
+      if (closed && (this.formClosedSends[f.id] || 0) >= 3) continue;
+      if (now - (this.formSentAt[f.id] || 0) < every) continue;
+      if (closed) this.formClosedSends[f.id] = (this.formClosedSends[f.id] || 0) + 1;
+      this.publishFormState(f.id, 5);
+    }
+    for (const fid of this.watched) {
+      if (st.forms[fid]) { delete this.askCount[fid]; continue; }
+      if (this.askSentAt[fid] === undefined) this.askSentAt[fid] = now;
+      const n = this.askCount[fid] || 0;
+      const gap = n === 0 ? minute / 3 : n === 1 ? 10 * minute : n === 2 ? 20 * minute : 60 * minute;
+      if (n >= 26 || now - this.askSentAt[fid] < gap) continue;
+      this.askSentAt[fid] = now; this.askCount[fid] = n + 1;
+      this.enqueue(4, wireTopicFor(fid), { v: 2, type: "ASK", formId: fid }, "ask:" + fid);
+    }
+    const retryAt = [10, 20, 30, 40, 50, 110, 170, 230, 290];
+    let dirty = false;
+    for (const [fid, entry] of Object.entries(this.myAnswers)) {
+      const f = st.forms[fid]; if (!f) continue;
+      for (const a of [entry, ...(entry.earlier || [])]) {
+        if (!a || !a.eventId || !a.confirmationId || (f.confirmations || []).includes(a.confirmationId)) continue;
+        const first = a.submittedAt || 0;
+        if (!first || now - first > 14 * 24 * 60 * minute) continue;
+        const n = a.retries || 0;
+        const due = !a.sent ? 0 : first + minute * (n < 9 ? retryAt[n] : 290 + 360 * (n - 8));
+        if (now < due) continue;
+        const e = this.log.find((x) => x.id === a.eventId); if (!e) continue;
+        this.sendEvents(fid, [e], a.sent ? 6 : 1, "ans:" + a.eventId);
+        if (a.sent) a.retries = n + 1; else a.sent = true;
+        dirty = true;
+      }
+    }
+    if (dirty) this.saveMeta();
+    if (now - this.lastPullRound >= 15 * minute) this.pullAll();
+    this.drain();
+  }
   /** Feed every decode candidate of ONE received message (loam-transport hands these
    *  over). Returns true when one of them was a WhisperBox envelope. meta (loam-transport
    *  with network timestamps) = {ts (ns), tsMs, source, bearer}; ts 0 = the bearer has none. */
   ingest(candidates, meta) {
     // Never throw: this runs inside native event callbacks, where an escaping exception
     // would take the app down. A bad message is counted and skipped.
-    try { this._rxNetMs = netMsOf(meta, this.now()); return this._ingest(candidates); }
+    try { this._rxNetMs = netMsOf(meta, this.now()); this._rxLive = meta?.source !== "history"; return this._ingest(candidates); }
     catch (e) { this.diag.rxErr = (this.diag.rxErr || 0) + 1; this.lastError = String(e?.message || e); return false; }
   }
   _ingest(candidates) {
@@ -327,42 +452,25 @@ export class WhisperboxClient {
   }
   handle(env) {
     if (!env || typeof env !== "object") return false;
-    if (env.v === 2 && (env.t === "fp" || env.t === "ids" || env.t === "need")) {
-      if (!wellFormedCatchup(env)) { this.diag.admDropType++; return true; }
-      // catch-up frames have a budget, and at most 16 ranges with increasing bounds (open-review
-      // 2026-11-02, FR-4; as the core: a small frame cost a scan of the whole id set per range)
-      if (!this.takeToken("ctl", 120)) { this.diag.ctlDropBudget = (this.diag.ctlDropBudget || 0) + 1; return true; }
-      if (env.t === "fp") {
-        const b = env.bounds || [];
-        let ok = (env.fps || []).length <= 16;
-        for (let i = 0; ok && i < b.length; i++) if ((i === 0 ? env.lo !== undefined && !(b[i] > env.lo) : !(b[i] > b[i - 1])) || (env.hi !== undefined && b[i] > env.hi)) ok = false;
-        if (!ok) { this.diag.rxBad = (this.diag.rxBad || 0) + 1; return true; }
-      }
-      const byKey = new Map(this.log.map((e) => [eventKey(e), e]));
-      const step = respond([...byKey.keys()].map((id) => ({ id })), env, this.deviceId);
-      for (const r of step.replies) this.sendEnvelope(r);
-      let n = 0;
-      for (const s of step.serve) {
-        const e = byKey.get(s.id);
-        if (!e) continue;
-        if (n >= 100) { this.diag.serveSkipped = (this.diag.serveSkipped || 0) + 1; continue; }   // the rest on the next round
-        if (this.serve(e)) n++;
-      }
-      this.diag.rbsrRx++;
+    // v1 catch-up (RBSR, SYNC_REQ): not answered any more - nobody serves anybody (ADR 0024)
+    if (env.v === 2 && (env.t === "fp" || env.t === "ids" || env.t === "need")) return true;
+    if (env.type === "SYNC_REQ") return true;
+    if (env.type === "EVENT" && env.event && typeof env.event === "object") { this.ingestOne(env.event, false); return true; }
+    if (env.type === "EVENTS" && Array.isArray(env.events)) {
+      if (env.events.length > 2000) { this.diag.rxBad = (this.diag.rxBad || 0) + 1; return true; }
+      if (this._rxLive !== false && !this.takeToken("ctl", 120)) { this.diag.ctlDropBudget = (this.diag.ctlDropBudget || 0) + 1; return true; }
+      for (const e of env.events) { try { this.ingestOne(e, true); } catch { this.diag.rxBad = (this.diag.rxBad || 0) + 1; } }
       return true;
     }
-    if (env.type === "SYNC_REQ") {
-      if (env.rbsr) return true; // RBSR peers reconcile the exact delta instead
-      if (env.from !== this.deviceId && this.now() - this.lastReserveAt >= 3000) {
-        this.lastReserveAt = this.now(); this.diag.legacyReseeds++;
-        for (const e of this.log) this.serve(e);
-      }
-      return true;
-    }
-    if (env.type === "EVENT" && env.event && typeof env.event === "object") {
-      const e = env.event;
-      if (!wellFormedEvent(e)) { this.diag.admDropType++; return true; }
-      if (e.hlc.wall > this.now() + MAX_CLOCK_LEAD_MS) { this.diag.admDropFuture = (this.diag.admDropFuture || 0) + 1; return true; }   // WB-3
+    if (env.type === "ASK") { this.onAsk(env); return true; }
+    return false;
+  }
+  /** One event from the network (live, Store or a bundle): checks, budget (live only; a copy we hold
+   *  costs nothing inside a bundle), signature, merge. True when new. */
+  ingestOne(e, bundled) {
+    if (!e || typeof e !== "object") return false;
+      if (!wellFormedEvent(e)) { this.diag.admDropType++; return false; }
+      if (e.hlc.wall > this.now() + MAX_CLOCK_LEAD_MS) { this.diag.admDropFuture = (this.diag.admDropFuture || 0) + 1; return false; }   // WB-3
       // Answers are unsigned on the wire: a node-wide budget, and the log a cap (open-review
       // 2026-11-01, FR-3; same numbers as the core). Every copy costs, a replayed one too, and signed
       // events have their own budget (2026-11-02, FR-2/FR-6), taken before the signature is checked
@@ -372,13 +480,13 @@ export class WhisperboxClient {
       const key = eventKey(e);
       const held = this.held.get(key);
       const dup = held !== undefined && (isResp || compareHlc(e.hlc, held) >= 0);
-      if (!this.takeToken(isResp ? "resp" : "sig", RESP_BUDGET)) { this.diag.admDropBudget = (this.diag.admDropBudget || 0) + 1; return true; }
-      if (dup) { this.diag.rxDup++; if (this.noteNetTime(e)) this.emit(); return true; }   // known without a scan or a verify
-      if (!this.admit(e)) return true;
+      if (this._rxLive !== false && !(bundled && dup) && !this.takeToken(isResp ? "resp" : "sig", RESP_BUDGET)) { this.diag.admDropBudget = (this.diag.admDropBudget || 0) + 1; return false; }
+      if (dup) { this.diag.rxDup++; if (this.noteNetTime(e)) this.emit(); return false; }   // known without a scan or a verify
+      if (!this.admit(e)) return false;
       const eBytes = JSON.stringify(e).length;
       const oldBytes = held !== undefined ? (this.heldBytes.get(key) || 0) : 0;
       const grow = Math.max(0, eBytes - oldBytes);
-      if (isResp ? (this.logResponses >= MAX_LOG_RESPONSES || this.logBytes + grow > MAX_LOG_BYTES) : (grow > 0 && this.logBytes + grow > MAX_LOG_BYTES + LOG_RESERVE_BYTES)) { this.diag.admDropFull = (this.diag.admDropFull || 0) + 1; return true; }
+      if (isResp ? (this.logResponses >= MAX_LOG_RESPONSES || this.logBytes + grow > MAX_LOG_BYTES) : (grow > 0 && this.logBytes + grow > MAX_LOG_BYTES + LOG_RESERVE_BYTES)) { this.diag.admDropFull = (this.diag.admDropFull || 0) + 1; return false; }
       this.noteNetTime(e);
       if (mergeOne(this.log, e)) {
         this.logBytes += eBytes - oldBytes; if (held === undefined && isResp) this.logResponses++;
@@ -388,8 +496,6 @@ export class WhisperboxClient {
       }
       else this.diag.rxDup++;
       return true;
-    }
-    return false;
   }
   // ADR 0019: keep the earliest network time per answer. A copy re-served during catch-up is
   // published again (a later time) and a store copy keeps the original, so the earliest is the
@@ -500,7 +606,8 @@ export class WhisperboxClient {
       this.logBytes += n - (this.heldBytes.get(key) || 0);
       this.held.set(key, e.hlc); this.heldBytes.set(key, n); this.clock.receive(e.hlc); this.saveLog();
     }
-    this.broadcast(e); this.emit();
+    if (e.type !== EventType.RESPONSE_SUBMIT) this.broadcast(e);   // answers: sendEvents with their form
+    this.emit();
     return true;
   }
   // when this device first saw each answer (kept, never synced; FR-3), saved once per burst
@@ -733,13 +840,17 @@ export class WhisperboxClient {
     if (!wellFormedEvent(e)) return { ok: false, error: "these answers are too long to send - shorten the longest ones" };
     // the answers sent before (several-answer forms): kept, newest last; the latest is the main entry
     const earlier = perResp !== 1 && myCount > 0 && this.myAnswers[formId]
-      ? [...(this.myAnswers[formId].earlier || []), { answers: this.myAnswers[formId].answers, submittedAt: this.myAnswers[formId].submittedAt, confirmationId: this.mySubs[formId] || null }]
+      ? [...(this.myAnswers[formId].earlier || []), { answers: this.myAnswers[formId].answers, submittedAt: this.myAnswers[formId].submittedAt, confirmationId: this.mySubs[formId] || null,
+          ...(this.myAnswers[formId].eventId ? { eventId: this.myAnswers[formId].eventId, sent: this.myAnswers[formId].sent, retries: this.myAnswers[formId].retries } : {}) }]
       : null;
     this.mySubs[formId] = confirmationId;
-    this.myAnswers[formId] = { answers, submittedAt, firstSubmittedAt: isEdit ? firstAt : submittedAt, ...(earlier ? { earlier } : {}) };   // private copy: the sealed blob only opens for the creator
+    // eventId + confirmationId: the answer goes out again until its receipt (ADR 0024)
+    this.myAnswers[formId] = { answers, submittedAt, firstSubmittedAt: isEdit ? firstAt : submittedAt, ...(earlier ? { earlier } : {}),
+      eventId: e.id, confirmationId, sent: false, retries: 0 };   // private copy: the sealed blob only opens for the creator
     this.saveMeta();
     if (this.answerDrafts[formId]) { delete this.answerDrafts[formId]; this.saveDrafts(); }
     this.adopt(e);
+    if (this.nodeReady) { this.sendEvents(formId, [e], 1, "ans:" + e.id); this.myAnswers[formId].sent = true; this.saveMeta(); }
     return { ok: true, eventId: e.id };
   }
   importForm(input) {
@@ -752,7 +863,7 @@ export class WhisperboxClient {
     this.watched.add(l.formId);
     if (l.by && !pin) this.pins[l.formId] = l.by;
     this.saveMeta();
-    if (!have && this.nodeReady) { this.requestSync(); this.catchupRound(); }
+    if (!have && this.nodeReady) this.syncTopics();   // its bucket, from Store (ADR 0024)
     this.emit();
     return { ok: true, formId: l.formId, pending: !have };
   }
@@ -815,7 +926,7 @@ export class WhisperboxClient {
     if (!f) return { ok: false, error: "unknown form" };
     return { ok: true, uri: `whisperbox://form?id=${f.id}&by=${f.creator}` };
   }
-  resync() { if (!this.nodeReady) return { ok: false, error: "not connected" }; this.requestSync(); this.catchupRound(); return { ok: true }; }
+  resync() { if (!this.nodeReady) return { ok: false, error: "not connected" }; this.syncTopics(); this.pullAll(); for (const fid of this.watched) this.askSentAt[fid] = 0; return { ok: true }; }
 
   // ── read side (same shape as the core's snapshot) ──────────────────────────────
   // Opening keys for MY forms, by sealing pubkey: the form's own derived key, or the identity

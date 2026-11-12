@@ -17,7 +17,7 @@ async function pair() {
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const [from, m] = wire.shift(); (from === "a" ? b : a).ingest([m]); } };
   const fid = a.createForm({ title: "r4", questions: [{ id: "q", type: "textarea", text: "?" }] }).formId;
-  a.catchupRound(); b.catchupRound(); pump(); pump();
+  /* wire v2: the creator sent the form state on create */ pump(); pump();
   return { a, b, fid, pump, wire };
 }
 const answerFrame = (a, fid, plain) => {
@@ -47,14 +47,14 @@ test("FR-6: a replayed answer counts against the budget", async () => {
   assert.ok(a.diag.rxDup > 0 && a.diag.admDropBudget > 0, JSON.stringify(a.diag));
 });
 
-test("FR-4: catch-up frames have a budget; bad bounds are refused", async () => {
+test("FR-4 / ADR 0024: v1 catch-up frames are ignored; EVENTS frames have a frame budget", async () => {
   const { a } = await pair();
-  const bad = bytes(JSON.stringify({ v: 2, t: "fp", from: "x", bounds: ["b", "a"], fps: ["00", "00", "00"] }));
-  a.ingest([bad]);
-  assert.ok((a.diag.rxBad || 0) >= 1, "decreasing bounds");
-  const fp = bytes(JSON.stringify({ v: 2, t: "fp", from: "flood", bounds: [], fps: ["00000000000000000000000000000000"] }));
-  for (let i = 0; i < 200; i++) a.ingest([fp]);
-  assert.ok((a.diag.ctlDropBudget || 0) > 0);
+  const sent0 = a.diag.txTotal;
+  for (let i = 0; i < 200; i++) a.ingest([bytes(JSON.stringify({ v: 2, t: "fp", from: "flood", bounds: [], fps: ["00000000000000000000000000000000"] }))]);
+  assert.strictEqual(a.diag.txTotal, sent0, "nothing answered");
+  const ev = bytes(JSON.stringify({ v: 2, type: "EVENTS", events: [] }));
+  for (let i = 0; i < 200; i++) a.ingest([ev]);
+  assert.ok((a.diag.ctlDropBudget || 0) > 0, "a flood of bundle frames runs out of the frame budget");
 });
 
 test("FR-5/FR-7: the snapshot carries only the forms this device shows", async () => {

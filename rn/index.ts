@@ -12,7 +12,7 @@
 import * as SecureStore from "expo-secure-store";
 import { fileStore, secretStore, type KV } from "./store";
 // @ts-ignore - plain ESM shared with the desktop reference + tests
-import { WhisperboxClient, TOPIC, parseLink } from "../client/src/client.mjs";
+import { WhisperboxClient, TOPIC, parseLink, isWireTopic } from "../client/src/client.mjs";
 
 export { TOPIC, parseLink, fileStore, secretStore };
 export type { KV };
@@ -31,6 +31,7 @@ export type Transport = {
   preferServiceBackend(shared: boolean, appId: string): void;
   start(o: { deviceId: string; topics: string[]; onReceive: OnRx; onStatus?: (s: string) => void }): Promise<unknown>;
   storeSync(cb: OnRx): Promise<unknown>;
+  join(topics: string[]): Promise<unknown>;
   publishSealed(topic: string, bytes: Uint8Array): Promise<unknown>;
   usingServiceBackend?(): boolean;
 };
@@ -48,7 +49,12 @@ export function createWhisperbox(o: Options) {
   const client: any = new WhisperboxClient({
     store: o.store || fileStore,
     secrets: o.secrets || secretStore,
-    send: async (bytes: Uint8Array) => { await transport.publishSealed(TOPIC, bytes); },
+    // wire v2 (ADR 0024): one bucket topic per form; Store pulls for the joined buckets
+    send: async (bytes: Uint8Array, topic?: string) => { await transport.publishSealed(topic || TOPIC, bytes); },
+    join: (topics: string[]) => { transport.join(topics).catch(() => {}); },
+    pull: () => transport.storeSync((t: string, c: Uint8Array[], m?: RxMeta) => {
+      try { return isWireTopic(t) && client.ingest(c, { ...(m || {}), source: "history" }); } catch { return false; }
+    }),
   });
   const net = { status: "Starting…", started: false, error: "", shared: true };
   let booted: Promise<void> | null = null;
@@ -68,9 +74,9 @@ export function createWhisperbox(o: Options) {
       try {
         await transport.start({
           deviceId: client.deviceId,
-          topics: [TOPIC],
+          topics: [],   // buckets are joined per form (client.syncTopics)
           onReceive: (topic: string, candidates: Uint8Array[], meta?: RxMeta) => {
-            if (topic !== TOPIC) return false;
+            if (!isWireTopic(topic)) return false;
             rx++; if (rx <= 3 || rx % 25 === 0) log("rx #" + rx + " new=" + client.diag.rxNew + " err=" + (client.diag.rxErr || 0) + " netTs=" + (client.diag.netTs || 0));
             return client.ingest(candidates, meta);
           },
@@ -80,9 +86,7 @@ export function createWhisperbox(o: Options) {
         log("started " + (transport.usingServiceBackend?.() ? "shared node" : "own node"));
         // Protocol errors must not be reported as "start failed" (the transport IS up).
         try { client.onConnected(); } catch (e: any) { log("onConnected error " + (e?.message || e)); }
-        log("store sync");
-        transport.storeSync((t: string, c: Uint8Array[], m?: RxMeta) => { try { return t === TOPIC && client.ingest(c, m); } catch { return false; } })
-          .then(() => log("store sync done log=" + client.log.length)).catch((e: any) => log("store sync failed " + (e?.message || e)));
+        // onConnected joined the buckets and pulled them from Store (wire v2)
       } catch (e: any) {
         net.error = String(e?.message || e); net.status = "Offline"; log("start failed: " + net.error); client.emit();
       }
@@ -103,8 +107,8 @@ export function createWhisperbox(o: Options) {
 
   function pullHistory() {
     if (!net.started) return Promise.resolve();
-    client.resync();
-    return transport.storeSync((t: string, c: Uint8Array[], m?: RxMeta) => t === TOPIC && client.ingest(c, m)).then(() => client.emit());
+    client.resync();   // joins buckets, pulls them from Store, asks again for forms still missing
+    return Promise.resolve();
   }
 
   return { client, net, boot, setSharedNode, pullHistory };

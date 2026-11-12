@@ -25,7 +25,7 @@ test("a backdated answer the network saw after the close is out; an earlier copy
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = (meta) => { const out = []; while (wire.length) { const [from, m] = wire.shift(); if (from === "a") b.ingest([m]); else { out.push(m); a.ingest([m], meta); } } return out; };
   const fid = a.createForm({ title: "deadline", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
-  b.joinForm?.(fid); a.catchupRound(); b.catchupRound(); pump(); pump();
+  b.joinForm?.(fid); /* wire v2: the creator sent the form state on create */ pump(); pump();
   assert.ok(b.state().forms[fid], "b has the form");
 
   tA = N + 10_000; assert.ok(a.closeForm(fid).ok);   // b is offline: never sees the close
@@ -58,7 +58,7 @@ test("without network time the answer keeps its HLC and is marked unverified tim
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const [from, m] = wire.shift(); (from === "a" ? b : a).ingest([m]); } };
   const fid = a.createForm({ title: "ble", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
-  a.catchupRound(); b.catchupRound(); pump(); pump();
+  /* wire v2: the creator sent the form state on create */ pump(); pump();
   b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);   // answers need the creator a link names (FR-3)
   assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "x" }]).ok); pump();
   const r = a.decrypt(a.state()).responses[fid];

@@ -53,7 +53,9 @@ export function createWhisperbox(o: Options) {
     send: async (bytes: Uint8Array, topic?: string) => { await transport.publishSealed(topic || TOPIC, bytes); },
     join: (topics: string[]) => { transport.join(topics).catch(() => {}); },
     pull: () => transport.storeSync((t: string, c: Uint8Array[], m?: RxMeta) => {
-      try { return isWireTopic(t) && client.ingest(c, { ...(m || {}), source: "history" }); } catch { return false; }
+      // a Store reply is untrusted input: only buckets this client joined, at most 100 messages a call
+      // (audit W2-3, as the core)
+      try { return isWireTopic(t) && client.joined.has(t) && client.ingest((c || []).slice(0, 100), { ...(m || {}), source: "history" }); } catch { return false; }
     }),
   });
   const net = { status: "Starting…", started: false, error: "", shared: true };

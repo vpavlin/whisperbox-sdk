@@ -101,13 +101,28 @@ export function netMsOf(meta, now) {
   if (!meta || typeof meta !== "object") return 0;
   let t = Number(meta.tsMs);
   if (!(t > 0)) { const ns = Number(meta.ts); t = ns > 1e15 ? Math.floor(ns / 1e6) : 0; }
-  // the sender's node sets it: only within MAX_CLOCK_LEAD_MS of our receipt, either way (FR-6, as the core)
-  if (!(t > 1e12) || t > now + MAX_CLOCK_LEAD_MS || t < now - MAX_CLOCK_LEAD_MS) return 0;
+  // never in the future; a live frame's must be about now (FR-6). A Store copy carries the message's
+  // network timestamp from when it was published: deadlines and closes are judged by it, not by the
+  // sender's own clock (Václav 2026-11-13, audit W2-11; as the core)
+  if (!(t > 1e12) || t > now + MAX_CLOCK_LEAD_MS) return 0;
+  if (meta.source !== "history" && t < now - MAX_CLOCK_LEAD_MS) return 0;
   return Math.floor(t);
 }
 export const MAX_CLOCK_LEAD_MS = 5 * 60 * 1000;
-const isStr = (o, k, max = 4096, req = true) => (!(k in o) ? !req : typeof o[k] === "string" && o[k].length <= max && (!req || o[k].length > 0));
-const optStr = (o, k, max = 65536) => !(k in o) || o[k] === null || (typeof o[k] === "string" && o[k].length <= max);
+// UTF-8 bytes, as the core counts (std::string::size): UTF-16 units let a 40,000-char Czech title
+// through here that every desktop refused (audit W2-8). No TextEncoder: Hermes doesn't have one.
+export function utf8Bytes(str) {
+  let n = 0;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    if (c < 0x80) n += 1; else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length && (str.charCodeAt(i + 1) & 0xfc00) === 0xdc00) { n += 4; i++; }
+    else n += 3;
+  }
+  return n;
+}
+const isStr = (o, k, max = 4096, req = true) => (!(k in o) ? !req : typeof o[k] === "string" && (o[k].length <= max / 4 || utf8Bytes(o[k]) <= max) && (!req || o[k].length > 0));
+const optStr = (o, k, max = 65536) => !(k in o) || o[k] === null || (typeof o[k] === "string" && (o[k].length <= max / 4 || utf8Bytes(o[k]) <= max));
 const optBool = (o, k) => !(k in o) || o[k] === null || typeof o[k] === "boolean";
 const optNum = (o, k) => !(k in o) || o[k] === null || (typeof o[k] === "number" && Number.isFinite(o[k]));
 // numbers the fold does arithmetic on, bounded (open-review 2026-10-30, FR-2; same as the C++ engine)
@@ -135,6 +150,10 @@ export const wellFormedFormFields = (f) => isObj(f)
   && (!("whitelist" in f) || f.whitelist === null || (isObj(f.whitelist) && optStr(f.whitelist, "type", 32) && optStr(f.whitelist, "value", 1 << 20)));
 /** One event, serialized (open-review FR-6; Logos Delivery carries ~150 KB). Same as the C++ core. */
 export const MAX_EVENT_BYTES = 256 * 1024;
+// What one event may be to be SENT (audit W2-1; as the core's kMaxWireEventBytes): Delivery refuses
+// over 150 KiB and the wire is base64 twice. Peers still accept up to MAX_EVENT_BYTES.
+export const MAX_WIRE_EVENT_BYTES = 80000;
+const sendable = (e) => { try { return utf8Bytes(JSON.stringify(e)) <= MAX_WIRE_EVENT_BYTES; } catch { return false; } };
 /** A decoded frame, and how deep its JSON may nest (open-review FR-1). */
 export const MAX_FRAME_BYTES = 1 << 20;
 export const MAX_JSON_DEPTH = 32;
@@ -157,7 +176,7 @@ export function jsonTooDeep(text, max) {
 }
 export function wellFormedEvent(e) {
   if (!isObj(e) || !isStr(e, "id", 512) || !isStr(e, "type", 64)) return false;
-  try { if (JSON.stringify(e).length > MAX_EVENT_BYTES) return false; } catch { return false; }
+  try { if (utf8Bytes(JSON.stringify(e)) > MAX_EVENT_BYTES) return false; } catch { return false; }
   if ("v" in e && !Number.isInteger(e.v)) return false;
   if (!optStr(e, "dev", 256) || !optStr(e, "pub", 256) || !optStr(e, "sig", 512)) return false;
   const h = e.hlc;
@@ -175,7 +194,7 @@ export function wellFormedEvent(e) {
   if (e.type === EventType.FORM_UPDATE) return "form" in p && wellFormedFormFields(p.form);
   if (e.type === EventType.FORM_COOWNER) return isStr(p, "owner", 64) && isStr(p, "sealedKey", 4096);
   if (e.type === EventType.RESPONSE_REPLY) return isStr(p, "to", 128) && isStr(p, "sealed", 1 << 20);
-  if (e.type === EventType.FORM_CLOSE) return optNum(p, "expiresAt");
+  if (e.type === EventType.FORM_CLOSE) return optNumIn(p, "expiresAt", 0, MAX_TIME_MS);   // as the core (audit W2-8)
   return e.type === EventType.FORM_REOPEN;
 }
 export function wellFormedCatchup(m) {
@@ -382,9 +401,13 @@ export class WhisperboxClient {
     }
   }
   sendEvents(formId, events, prio, key) {
-    const MAX = 120000; let chunk = [], bytes = 0, part = 0;
+    const MAX = MAX_WIRE_EVENT_BYTES; let chunk = [], bytes = 0, part = 0;   // bytes once base64'd twice stay under 150 KiB (W2-1)
     const flush = () => { if (!chunk.length) return; this.enqueue(prio, wireTopicFor(formId), { v: 2, type: "EVENTS", events: chunk }, part ? key + "#" + part : key); part++; chunk = []; bytes = 0; };
-    for (const e of events) { const n = JSON.stringify(e).length; if (bytes + n > MAX) flush(); chunk.push(e); bytes += n; }
+    for (const e of events) {
+      const n = utf8Bytes(JSON.stringify(e));
+      if (n > MAX) { this.diag.txDropped = (this.diag.txDropped || 0) + 1; continue; }   // an old event too big for any frame: never sent
+      if (bytes + n > MAX) flush(); chunk.push(e); bytes += n;
+    }
     flush();
   }
   /** The form's state as the creator side knows it: publish, edits, close/re-open, co-owners, replies (not receipts: they go on their own). */
@@ -430,7 +453,10 @@ export class WhisperboxClient {
       this.publishFormState(f.id, 5);
     }
     for (const fid of this.watched) {
-      if (st.forms[fid]) { delete this.askCount[fid]; continue; }
+      // held - unless it is another creator's form under that id and the link names someone else:
+      // keep asking for the real one (audit W2-7)
+      const pin = this.pins[fid];
+      if (st.forms[fid] && (!pin || lc(st.forms[fid].creator || "") === lc(pin))) { delete this.askCount[fid]; continue; }
       if (this.askSentAt[fid] === undefined) this.askSentAt[fid] = now;
       const n = this.askCount[fid] || 0;
       const gap = n === 0 ? minute / 3 : n === 1 ? 10 * minute : n === 2 ? 20 * minute : 60 * minute;
@@ -495,7 +521,11 @@ export class WhisperboxClient {
       for (const e of env.events) { try { this.ingestOne(e, true); } catch { this.diag.rxBad = (this.diag.rxBad || 0) + 1; } }
       return true;
     }
-    if (env.type === "ASK") { this.onAsk(env); return true; }
+    if (env.type === "ASK") {   // a live ASK only, and it costs a frame token (audit W2-3/W2-6)
+      if (this._rxLive === false) return true;
+      if (!this.takeToken("ctl", 120)) { this.diag.ctlDropBudget = (this.diag.ctlDropBudget || 0) + 1; return true; }
+      this.onAsk(env); return true;
+    }
     return false;
   }
   /** One event from the network (live, Store or a bundle): checks, budget (live only; a copy we hold
@@ -634,7 +664,7 @@ export class WhisperboxClient {
   }
   // An event peers would refuse is neither kept nor sent (open-review 2026-11-02, FR-9/FR-10).
   adopt(e) {
-    if (!wellFormedEvent(e)) { this.lastError = "refused a local " + e.type + " peers would drop"; return false; }
+    if (!wellFormedEvent(e) || !sendable(e)) { this.lastError = "refused a local " + e.type + " peers would drop or that is too large to send"; return false; }
     const key = eventKey(e);
     if (mergeOne(this.log, e)) {
       const n = JSON.stringify(e).length;
@@ -776,6 +806,7 @@ export class WhisperboxClient {
     const e = this.buildEvent(EventType.FORM_PUBLISH, formPublishId(formId), p, true);
     // the same shape check peers apply, or they'd drop it and our state would differ (open-review FR-5)
     if (!wellFormedEvent(e)) return { ok: false, error: "the form is too large or has a field peers would refuse" };
+    if (!sendable(e)) return { ok: false, error: "the form is too large to send (about 78 KB at most) - shorten its texts" };   // W2-1
     this.adopt(e);
     return { ok: true, formId };
   }
@@ -790,6 +821,7 @@ export class WhisperboxClient {
     if (f.creator !== this.identity.address) return { ok: false, error: "not the creator" };
     const ue = this.buildEvent(EventType.FORM_UPDATE, formUpdateId(formId, C.randomHex(6)), { formId, author: this.identity.address, form: editableFromDef(def, f.publicKey) }, true);
     if (!wellFormedEvent(ue)) return { ok: false, error: "the form is too large or has a field peers would refuse" };   // FR-5
+    if (!sendable(ue)) return { ok: false, error: "the form is too large to send (about 78 KB at most) - shorten its texts" };   // W2-1
     this.adopt(ue);
     return { ok: true, formId };
   }
@@ -938,7 +970,7 @@ export class WhisperboxClient {
     const tag = "wb-" + C.randomHex(6);
     e.dev = tag; e.hlc = { ...e.hlc, dev: tag };
     // peers refuse an event over 256 KiB: say so instead of keeping an answer nobody gets (FR-10, as the core)
-    if (!wellFormedEvent(e)) return { ok: false, error: "these answers are too long to send - shorten the longest ones" };
+    if (!wellFormedEvent(e) || !sendable(e)) return { ok: false, error: "these answers are too long to send - shorten the longest ones" };   // W2-1: also small enough to SEND
     // the answers sent before (several-answer forms): kept, newest last; the latest is the main entry
     const earlier = perResp !== 1 && myCount > 0 && this.myAnswers[formId]
       ? [...(this.myAnswers[formId].earlier || []), { answers: this.myAnswers[formId].answers, submittedAt: this.myAnswers[formId].submittedAt, confirmationId: this.mySubs[formId] || null,

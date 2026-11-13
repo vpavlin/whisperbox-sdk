@@ -611,7 +611,7 @@ export class WhisperboxClient {
       // reports, so one dishonest Store can't backdate an answer alone
       if (this.netLive.has(e.id) || (prev && prev >= t)) return false;
     } else {
-      if (this.netLive.has(e.id) && prev) return false;   // the FIRST live copy received is final (audit R3-3)
+      if (prev) return false;   // the first evidence is final: a live copy never re-dates a Store's or an earlier live time (R3-3, R4-3)
       this.netLive.add(e.id);
     }
     this.netTimes[e.id] = t;
@@ -797,7 +797,11 @@ export class WhisperboxClient {
     }
     if (!(this.baseWants(fid) || it.mine.has(fid) || this.coAccepted?.has(fid))) return false;
     // who may write what (audit R2-2, as the core)
-    if (e.type === EventType.FORM_PUBLISH) return (pin && author === pin) || (it.alts[fid] || 0) < 4;   // the link's creator; a few others, bounded
+    if (e.type === EventType.FORM_PUBLISH) {
+      if (pin && author === pin) return true;   // the link's creator
+      if (this.coAccepted?.has(fid)) { const inv = this.inviterOf(fid); if (!inv.conflict && inv.who === author) return true; }   // my inviter (R4-1)
+      return (it.alts[fid] || 0) < 4;           // a few others, bounded
+    }
     if (!creator) return false;   // no creator known yet: only its publishes and invitations (R3-5)
     if (author === creator) return true;
     if (e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.RESPONSE_REPLY) return !!it.coOwners[fid]?.has(author) || this.coOwnerGranted(fid, author);   // R3-6
@@ -815,7 +819,7 @@ export class WhisperboxClient {
     const kept = this.log.filter((e) => {
       const isResp = e.type === EventType.RESPONSE_SUBMIT;
       let keep = this.wanted(e);
-      if (!keep && isResp && ownUnsure && unsureKept < 2000) { keep = true; unsureKept++; }   // bounded (R3-9)
+      if (!keep && isResp && ownUnsure && !this.firstSeen[e.id]) { keep = true; unsureKept++; }   // never received from the network = made here (R4-5)
       if (keep && isResp && this._wantedForm) this.respPerForm[this._wantedForm] = (this.respPerForm[this._wantedForm] || 0) + 1;
       return keep;
     });
@@ -920,6 +924,16 @@ export class WhisperboxClient {
     const creator = this.pins[fid] ? lc(this.pins[fid]) : (this.interest().creator[fid] || "");
     return !creator || creator === lc(author || "");
   }
+  // the author of the grant(s) naming me for fid, in log order; conflict when different authors do (R4-1, as the core)
+  inviterOf(fid) {
+    const me = lc(this.identity?.address ?? ""); let who = "", conflict = false;
+    for (const x of this.log) {
+      if (!x || x.type !== EventType.FORM_COOWNER || lc(x.payload?.formId ?? "") !== fid || lc(x.payload?.owner ?? "") !== me) continue;
+      const a = lc(x.payload?.author ?? "");
+      if (!who) who = a; else if (a !== who) conflict = true;
+    }
+    return { who, conflict };
+  }
   coOwnerGranted(fid, who) {
     return this.log.some((x) => x && x.type === EventType.FORM_COOWNER && lc(x.payload?.formId ?? "") === fid && lc(x.payload?.owner ?? "") === who && this.grantFromCreator(fid, x.payload?.author));
   }
@@ -929,6 +943,7 @@ export class WhisperboxClient {
       if (!e || e.type !== EventType.FORM_COOWNER || lc(e.payload?.owner ?? "") !== me) continue;
       const fid = lc(e.payload?.formId ?? "");
       if (this.coAccepted.has(fid) || this.coDeclined.has(fid) || seen.has(fid) || !this.grantFromCreator(fid, e.payload?.author)) continue;   // R3-1
+      if (this.inviterOf(fid).conflict) continue;   // grants from more than one author: no invitation shown (R4-1)
       seen.add(fid); out.push({ formId: fid, from: lc(e.payload?.author ?? ""), at: e.hlc?.wall || 0 });
     }
     return out;
@@ -937,10 +952,10 @@ export class WhisperboxClient {
   /** Accept a co-owner invitation: from then on the form and its answers are kept and pulled. */
   acceptCoOwner(formId) {
     formId = lc(formId);
-    const me = lc(this.identity.address);
-    const g = this.log.find((x) => x && x.type === EventType.FORM_COOWNER && lc(x.payload?.formId ?? "") === formId && lc(x.payload?.owner ?? "") === me && this.grantFromCreator(formId, x.payload?.author));
-    if (!g) return { ok: false, error: "no co-owner invitation for this form" };
-    if (!this.pins[formId]) { this.pins[formId] = lc(g.payload.author); this.saveMeta(); }   // the creator I trust is the one who invited me (R3-14)
+    const inv = this.inviterOf(formId);
+    if (!inv.who || !this.grantFromCreator(formId, inv.who)) return { ok: false, error: "no co-owner invitation for this form" };
+    if (inv.conflict) return { ok: false, error: "invitations to this form come from more than one sender - open the creator's link instead" };
+    // no pin (R4-1): the fold decides the creator; the grant counts only if its author is that creator
     this.coAccepted.add(formId); this.coDeclined.delete(formId); this.saveCoOwners();
     this._int = null; this._opened = null;
     if (this.nodeReady) { this.syncTopics(); this.pullAll(); }

@@ -6,9 +6,11 @@ import { WhisperboxClient } from "../src/client.mjs";
 const mem = () => { const m = new Map(); return { get: async (k) => m.get(k) ?? null, set: async (k, v) => { m.set(k, v); }, m }; };
 
 async function pair() {
-  const peers = [];
+  const peers = [], kept = [];
   const mk = async () => {
-    const c = new WhisperboxClient({ store: mem(), send: async (b) => { for (const p of peers) if (p !== c) p.ingest([b]); } });
+    // a fake Store too: opening a link pulls what was sent (a node keeps only forms it opened)
+    const c = new WhisperboxClient({ store: mem(), send: async (b) => { kept.push(b); for (const p of peers) if (p !== c) p.ingest([b]); },
+                                     pull: () => { for (const m of kept) c.ingest([m], { source: "history" }); } });
     await c.init(); c.onConnected(); peers.push(c); return c;
   };
   const a = await mk(), b = await mk();

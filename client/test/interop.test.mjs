@@ -56,6 +56,7 @@ for (const layers of [1, 0]) {
       const fA = (await b.call("createForm", [JSON.stringify({ title: "From desktop", questions: [
         { id: "q1", type: "radioButtons", text: "Pick", required: true, options: ["a", "b", "c"] },
         { id: "q2", type: "text", text: "Why?", required: false }] })])).formId;
+      phone.importForm(`whisperbox://form?id=${fA}&by=${addrA}`);   // only opened forms are kept (Václav 2026-11-13)
       assert.ok(await until(b, () => !!phone.state().forms[fA]), "phone receives the desktop's signed form");
       assert.strictEqual(phone.diag.admDropSig, 0, "phone admits the desktop's signature");
       const ans = [{ questionId: "q1", value: 2 }, { questionId: "q2", value: "žluťoučký kůň ✓" }];
@@ -118,6 +119,7 @@ for (const layers of [1, 0]) {
       //    phone caps its own form and confirms all the desktop's way.
       const fL = (await b.call("createForm", [JSON.stringify({ title: "Lifecycle", maxResponses: 5, showResponseCount: true,
         questions: [{ id: "q1", type: "boolean", text: "Coming?", required: true }] })])).formId;
+      phone.importForm(`whisperbox://form?id=${fL}&by=${addrA}`);   // only opened forms are kept
       assert.ok(await until(b, () => !!phone.state().forms[fL]));
       phone.importForm(`whisperbox://form?id=${fL}&by=${phone.state().forms[fL].creator}`);   // opened: shown in the snapshot (FR-7)
       assert.strictEqual(phone.snapshot().state.forms[fL].maxResponses, 5, "cap travels C++ -> JS");
@@ -160,6 +162,7 @@ for (const layers of [1, 0]) {
       const qq = [{ id: "q1", type: "boolean", text: "Sky blue?", required: true }, { id: "q2", type: "text", text: "Capital?" }];
       const quiz = { q1: { answer: true }, q2: { answer: ["Praha", "Prague"], points: 2 } };
       const dQ = (await b.call("createForm", [JSON.stringify({ title: "Desk quiz", questions: qq, quiz })])).formId;
+      phone.importForm(`whisperbox://form?id=${dQ}&by=${addrA}`);   // only opened forms are kept
       assert.ok(await until(b, () => !!phone.state().forms[dQ]));
       phone.importForm(`whisperbox://form?id=${dQ}&by=${phone.state().forms[dQ].creator}`);   // answers need the creator a link names (FR-3)
       assert.ok(phone.submitResponse(dQ, [{ questionId: "q1", value: true }, { questionId: "q2", value: " PRAGUE" }]).ok);

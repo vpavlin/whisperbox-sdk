@@ -255,6 +255,7 @@ export class WhisperboxClient {
       const k = C.identityFromPriv((await this.secrets.get("wb-fk-" + fid)) || "");
       if (k) this.cardKeys.set(fid, k);
     }
+    this.pruneUnwanted();
     this.emit();
   }
   /** Call when the transport is up (and again after any reconnect). */
@@ -305,8 +306,32 @@ export class WhisperboxClient {
     if (e.type === EventType.RESPONSE_SUBMIT) return false;   // answers: sendEvents with their form
     const fid = formIdOfEvent(e);
     if (!fid) return false;
-    this.publishFormState(fid, e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.RESPONSE_REPLY ? 2 : 3);
+    if (e.type === EventType.RESPONSE_CONFIRM) { this.queueReceipt(fid, e); return true; }   // a receipt goes on its own
+    this.publishFormState(fid, e.type === EventType.RESPONSE_REPLY ? 2 : 3);
     return true;
+  }
+  // Receipts, minimal (Václav 2026-11-13; mirror WhisperboxCoreImpl::queueReceipt): sent on their own,
+  // never in the form state; receipts made while one waits in the queue join it (one frame per form)
+  queueReceipt(fid, e) {
+    this.rcptPending = this.rcptPending || {};
+    const pend = this.rcptPending[fid] || (this.rcptPending[fid] = []);
+    if (pend.some((x) => x.id === e.id)) return;
+    pend.push(e);
+    this.sendEvents(fid, pend, 2, "rcpt:" + fid);
+  }
+  // A copy of an answer I hold and confirmed: the respondent is still retrying, so my receipt didn't
+  // reach it - send that one receipt again, at most every 10 minutes
+  resendReceiptFor(e) {
+    const dec = this._opened?.get(e?.payload?.encryptedPayload)?.dec;
+    const cid = typeof dec?.confirmationId === "string" ? dec.confirmationId : "", fid = lc(String(dec?.formId ?? ""));
+    if (!cid || !fid) return;
+    const r = this.log.find((x) => x.type === EventType.RESPONSE_CONFIRM && formIdOfEvent(x) === fid
+      && (x.payload?.confirmationId === cid || (Array.isArray(x.payload?.confirmationIds) && x.payload.confirmationIds.includes(cid))));
+    if (!r) return;
+    this.rcptResentAt = this.rcptResentAt || {};
+    if (this.now() - (this.rcptResentAt[r.id] || 0) < 10 * this.minute) return;
+    this.rcptResentAt[r.id] = this.now();
+    this.queueReceipt(fid, r);
   }
   relevantForms() {
     const out = new Set([...this.watched, ...Object.keys(this.mySubs), ...Object.keys(this.pins), ...Object.keys(this.answerDrafts), ...Object.keys(this.myAnswers)]);
@@ -345,7 +370,15 @@ export class WhisperboxClient {
       for (let i = 1; i < this.outQ.length; i++) { const a = this.outQ[i], b = this.outQ[bi]; if (a.prio < b.prio || (a.prio === b.prio && a.seq < b.seq)) bi = i; }
       const m = this.outQ.splice(bi, 1)[0];
       this.rlnTokens -= 1;
-      this.sendEnvelope(m.env, m.key, m.topic).then((ok) => { if (!ok) { this.rlnTokens = Math.min(this.perEpoch, this.rlnTokens + 1); this.outQ.push(m); } });
+      // receipts leave the pending set as they leave the queue; a failed send puts them back, so a
+      // later receipt for the form re-queues them together
+      const rf = typeof m.key === "string" && m.key.startsWith("rcpt:") ? m.key.slice(5).split("#")[0] : "";
+      if (rf && this.rcptPending) delete this.rcptPending[rf];
+      this.sendEnvelope(m.env, m.key, m.topic).then((ok) => {
+        if (ok) return;
+        this.rlnTokens = Math.min(this.perEpoch, this.rlnTokens + 1); this.outQ.push(m);
+        if (rf) { this.rcptPending = this.rcptPending || {}; const pend = this.rcptPending[rf] || (this.rcptPending[rf] = []); for (const e of m.env.events || []) if (!pend.some((x) => x.id === e.id)) pend.push(e); }
+      });
     }
   }
   sendEvents(formId, events, prio, key) {
@@ -354,14 +387,14 @@ export class WhisperboxClient {
     for (const e of events) { const n = JSON.stringify(e).length; if (bytes + n > MAX) flush(); chunk.push(e); bytes += n; }
     flush();
   }
-  /** The form's state as the creator side knows it: publish, edits, close/re-open, co-owners, receipts, replies. */
+  /** The form's state as the creator side knows it: publish, edits, close/re-open, co-owners, replies (not receipts: they go on their own). */
   publishFormState(formId, prio) {
     const f = this.state().forms[formId];
     if (!f) return;
     const authors = new Set([f.creator, ...((f.coOwners || []).map((c) => lc(c.address || "")))]);
     const evs = [];
     for (const e of this.log) {
-      if (e.type === EventType.RESPONSE_SUBMIT || formIdOfEvent(e) !== formId) continue;
+      if (e.type === EventType.RESPONSE_SUBMIT || e.type === EventType.RESPONSE_CONFIRM || formIdOfEvent(e) !== formId) continue;   // receipts go on their own
       const author = lc(e.type === EventType.FORM_PUBLISH ? e.payload.creator : e.payload.author || "");
       if (e.type === EventType.FORM_PUBLISH ? author !== f.creator : !authors.has(author)) continue;
       if (e.type === EventType.FORM_PUBLISH) evs.unshift(e); else evs.push(e);
@@ -481,7 +514,8 @@ export class WhisperboxClient {
       const held = this.held.get(key);
       const dup = held !== undefined && (isResp || compareHlc(e.hlc, held) >= 0);
       if (this._rxLive !== false && !(bundled && dup) && !this.takeToken(isResp ? "resp" : "sig", RESP_BUDGET)) { this.diag.admDropBudget = (this.diag.admDropBudget || 0) + 1; return false; }
-      if (dup) { this.diag.rxDup++; if (this.noteNetTime(e)) this.emit(); return false; }   // known without a scan or a verify
+      if (dup) { this.diag.rxDup++; if (isResp) this.resendReceiptFor(e); if (this.noteNetTime(e)) this.emit(); return false; }   // known without a scan or a verify
+      if (!this.wanted(e)) { this.diag.admDropUnwanted = (this.diag.admDropUnwanted || 0) + 1; return false; }   // not a form or answer of mine: never stored
       if (!this.admit(e)) return false;
       const eBytes = JSON.stringify(e).length;
       const oldBytes = held !== undefined ? (this.heldBytes.get(key) || 0) : 0;
@@ -492,6 +526,8 @@ export class WhisperboxClient {
         this.logBytes += eBytes - oldBytes; if (held === undefined && isResp) this.logResponses++;
         this.held.set(key, e.hlc); this.heldBytes.set(key, eBytes);
         if (isResp && !this.firstSeen[e.id]) { this.firstSeen[e.id] = this.now(); this.saveFirstSeenSoon(); }
+        // made a co-owner: the answers sent before were dropped (not openable then) - pull them again
+        if (e.type === EventType.FORM_COOWNER && lc(e.payload?.owner ?? "") === lc(this.identity?.address ?? "") && this.nodeReady) { this.syncTopics(); this.pullAll(); }
         this.diag.rxNew++; this.clock.receive(e.hlc); this.saveLog(); this.emit();
       }
       else this.diag.rxDup++;
@@ -622,6 +658,70 @@ export class WhisperboxClient {
     if (b.t < 1) return false;
     b.t -= 1; return true;
   }
+  // ── what this client keeps (mirror WhisperboxCoreImpl::wanted) ──────────────────
+  // Václav, 2026-11-13: "we should not store forms and answers we do not care about". Signed events:
+  // only forms I created, co-own, opened, answered or drafted. Answers: only mine, or ones a form key
+  // of mine opens. Everything else is dropped on arrival and pruned from the log (audit W2-2).
+  baseWants(fid) {
+    return this.watched.has(fid) || fid in this.mySubs || fid in this.pins || fid in this.answerDrafts || fid in this.myAnswers || this.hidden.has(fid);
+  }
+  interest() {
+    const who = this.identity?.address;
+    if (this._int && this._int.n === this.log.length && this._int.who === who && this._int.nCard === (this.cardKeys?.size || 0)) return this._int;
+    const st = this.state();
+    const mine = new Set(Object.values(st.forms).filter((f) => f.creator === who || this.isCoOwner(f)).map((f) => f.id));
+    const keys = this.formKeys(st);
+    // a form of mine whose key isn't here (a Keycard key after a reinstall): its answers can't be told
+    // from strangers' until the key is restored, so none is dropped meanwhile
+    const keyMissing = Object.values(st.forms).some((f) => f.creator === who && f.publicKey && !keys.has(f.publicKey));
+    this._int = { n: this.log.length, who, mine, keys, keyMissing, nCard: this.cardKeys?.size || 0 };
+    return this._int;
+  }
+  wanted(e) {
+    if (!this.identity) return true;
+    if (e.type === EventType.RESPONSE_SUBMIT) {
+      for (const a of Object.values(this.myAnswers)) {   // mine: kept until its receipt, and re-sent
+        if (a?.eventId === e.id) return true;
+        for (const x of a?.earlier || []) if (x?.eventId === e.id) return true;
+      }
+      const hex = e.payload?.encryptedPayload;
+      const { keys, keyMissing } = this.interest();
+      if (keyMissing) return true;   // can't judge until the missing form key is back (then pruneUnwanted)
+      if (!keys.size || typeof hex !== "string") return false;
+      for (const k of keys.values()) { try { C.eciesOpen(k, hex); return true; } catch { /* not this key */ } }
+      return false;
+    }
+    const fid = formIdOfEvent(e);
+    if (!fid) return false;
+    if (this.baseWants(fid)) return true;
+    const me = lc(this.identity.address), p = e.payload || {};
+    if (lc(p.creator ?? "") === me || lc(p.author ?? "") === me) return true;                        // my own
+    if (e.type === EventType.FORM_COOWNER && lc(p.owner ?? "") === me) return true;                   // a key shared with me
+    return this.interest().mine.has(fid);
+  }
+  // Drop from the log what this client no longer keeps (on load, after a form is forgotten)
+  pruneUnwanted() {
+    if (!this.identity || !this.log.length) return 0;
+    this._int = null; this.interest();   // from the whole log first: my own events always stay
+    const kept = this.log.filter((e) => this.wanted(e));
+    const dropped = this.log.length - kept.length;
+    if (!dropped) return 0;
+    this.log = kept;
+    const ids = new Set(kept.map((e) => e.id));
+    for (const m of [this.netTimes, this.firstSeen]) for (const id of Object.keys(m || {})) if (!ids.has(id)) delete m[id];
+    this.recountLog(); this._int = null; this._opened = null;
+    this.saveLog();
+    this.store.set("wb-nettime", JSON.stringify(this.netTimes)).catch?.(() => {});
+    this.store.set("wb-firstseen", JSON.stringify(this.firstSeen)).catch?.(() => {});
+    this.diag.pruned = (this.diag.pruned || 0) + dropped;
+    return dropped;
+  }
+  // A bucket no kept form is in any more: not pulled again (no unsubscribe exists; wanted() drops
+  // what still arrives live) - audit W2-9
+  dropUnusedBuckets() {
+    const want = new Set([...this.relevantForms()].map((f) => wireTopicFor(f)));
+    for (const t of [...this.joined]) if (isWireTopic(t) && !want.has(t)) this.joined.delete(t);
+  }
   recountLog() {
     this.logBytes = 0; this.logResponses = 0; this.held = new Map(); this.heldBytes = new Map();
     for (const e of this.log) {
@@ -643,6 +743,7 @@ export class WhisperboxClient {
     if (f && f.publicKey && f.publicKey !== k.pubHex) return { ok: false, error: "this key does not belong to that form (different Keycard?)" };
     await this.secrets.set("wb-fk-" + fid, C.toHex(k.priv));
     this.cardKeys.set(fid, k);
+    this._int = null; this.pruneUnwanted();   // a restored key: answers kept meanwhile can be judged now
     await this.store.set("wb-fk-index", JSON.stringify([...this.cardKeys.keys()]));
     this.emit();
     return { ok: true, pubHex: k.pubHex };
@@ -863,7 +964,9 @@ export class WhisperboxClient {
     this.watched.add(l.formId);
     if (l.by && !pin) this.pins[l.formId] = l.by;
     this.saveMeta();
-    if (!have && this.nodeReady) this.syncTopics();   // its bucket, from Store (ADR 0024)
+    // its bucket from Store (ADR 0024) - also when the bucket is already joined: a form nobody here
+    // opened was dropped on arrival (Václav 2026-11-13), so being in its bucket doesn't mean having it
+    if (!have && this.nodeReady) { const before = this.joined.size; this.syncTopics(); if (this.joined.size === before) this.pullAll(); }
     this.emit();
     return { ok: true, formId: l.formId, pending: !have };
   }
@@ -901,7 +1004,9 @@ export class WhisperboxClient {
   }
   forgetForm(formId) {
     // off this device: the link it was opened from (pin), hidden or not (FR-13, as the core's deleteLocalForm)
-    formId = lc(formId); this.watched.delete(formId); delete this.pins[formId]; this.hidden.delete(formId); this.saveMeta(); this.emit();
+    formId = lc(formId); this.watched.delete(formId); delete this.pins[formId]; this.hidden.delete(formId); this.saveMeta();
+    this.pruneUnwanted(); this.dropUnusedBuckets();   // its events go too, unless I created, co-own or answered it (audit W2-9)
+    this.emit();
     return { ok: true };
   }
   /** One form at a glance (another app's card): title, status, counts. Answer counts only for

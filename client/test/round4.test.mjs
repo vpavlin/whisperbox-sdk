@@ -11,9 +11,11 @@ const mem = () => { const m = new Map(); return { get: async (k) => m.get(k) ?? 
 const bytes = (s) => new TextEncoder().encode(s);
 
 async function pair() {
-  const wire = [];
-  const a = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["a", x]); } });
-  const b = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["b", x]); } });
+  // a fake Store: every frame sent stays here; opening a link pulls it (a node keeps only forms it opened)
+  const wire = [], kept = [];
+  const pull = (c) => () => { for (const m of kept) c.ingest([m], { source: "history" }); };
+  const a = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["a", x]); kept.push(x); }, pull: () => pull(a)() });
+  const b = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["b", x]); kept.push(x); }, pull: () => pull(b)() });
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const [from, m] = wire.shift(); (from === "a" ? b : a).ingest([m]); } };
   const fid = a.createForm({ title: "r4", questions: [{ id: "q", type: "textarea", text: "?" }] }).formId;
@@ -59,8 +61,9 @@ test("FR-4 / ADR 0024: v1 catch-up frames are ignored; EVENTS frames have a fram
 
 test("FR-5/FR-7: the snapshot carries only the forms this device shows", async () => {
   const { a, b, fid } = await pair();
-  assert.ok(b.state().forms[fid], "b knows the form from the topic");
-  assert.ok(!b.snapshot().state.forms[fid] && !b.snapshot().state.feed.includes(fid), "...but doesn't show it");
+  // Václav 2026-11-13: a form this device never opened isn't even stored (it used to be held, unshown)
+  assert.ok(!b.state().forms[fid], "b doesn't keep a form it never opened, though it came over the topic");
+  assert.ok(!b.snapshot().state.forms[fid] && !b.snapshot().state.feed.includes(fid), "...and doesn't show it");
   b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);
   assert.ok(b.snapshot().state.forms[fid].canRespond, "opened: shown");
 });

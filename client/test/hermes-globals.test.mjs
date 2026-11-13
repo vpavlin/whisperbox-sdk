@@ -16,15 +16,19 @@ const mem = () => { const m = new Map(); return { get: async (k) => m.get(k) ?? 
 
 test("client flows run with only the app's polyfills (Hermes-like globals)", async () => {
   assert.strictEqual(globalThis.TextDecoder, undefined, "TextDecoder really removed");
-  const wire = [];
-  const a = new WhisperboxClient({ store: mem(), send: async (b) => { wire.push(b); } });
-  const b = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(x); } });
+  // a fake Store: every frame sent stays; opening a link pulls it (a node keeps only forms it opened)
+  const wire = [], kept = [];
+  const pullInto = (c) => () => { for (const m of kept) c.ingest([m], { source: "history" }); };
+  // a flow test, not a budget test: the default 10 per 10 min on the real clock would hold the later forms back
+  const a = new WhisperboxClient({ store: mem(), msgsPerEpoch: 1e6, send: async (b) => { wire.push(b); kept.push(b); }, pull: () => pullInto(a)() });
+  const b = new WhisperboxClient({ store: mem(), msgsPerEpoch: 1e6, send: async (x) => { wire.push(x); kept.push(x); }, pull: () => pullInto(b)() });
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const m = wire.shift(); a.ingest([m]); b.ingest([m]); } };
   const fid = a.createForm({ title: "Ünïcode ✓", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
   /* wire v2: the creator sent the form state on create */ pump();                  // RBSR fingerprints (the crash site)
-  assert.ok(b.state().forms[fid], "b reconciled a's form via RBSR");   // the fold: the snapshot shows only opened forms
+  assert.ok(!b.state().forms[fid], "a form b never opened isn't kept (Václav 2026-11-13)");
   b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);   // answers need the creator a link names (FR-3)
+  assert.ok(b.state().forms[fid], "opened: pulled from Store");
   assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "žluťoučký" }]).ok); pump();
   assert.strictEqual(a.snapshot().creatorView.responses[fid][0].answers[0].value, "žluťoučký");
   assert.ok(a.confirmResponse(fid, b.identity.address).ok); pump();
@@ -39,8 +43,8 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   assert.ok(d.ok && a.snapshot().drafts.length === 1);
   a.lastHousekeep = 0; a.tick(); pump();
   assert.strictEqual(a.snapshot().drafts.length, 0, "due scheduled draft published by tick");
-  const later = Object.values(b.state().forms).find((f) => f.title === "Later");
-  assert.ok(later, "scheduled form reached the other device");
+  const later = Object.values(a.state().forms).find((f) => f.title === "Later");   // its link carries the id
+  assert.ok(later, "scheduled form published");
   b.importForm(`whisperbox://form?id=${later.id}&by=${a.identity.address}`);
   b.saveAnswerDraft(later.id, [{ questionId: "q1", value: true }]);
   assert.strictEqual(b.snapshot().state.forms[later.id].answerDraft[0].value, true);
@@ -65,7 +69,7 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   // anonymous forms: per-form identity; every answer event carries a per-form device tag
   const an = a.createForm({ title: "Anon", anonymous: true, questions: [{ id: "q1", type: "boolean", text: "?", required: true }] }).formId; pump();
   b.importForm(`whisperbox://form?id=${an}&by=${a.identity.address}`);
-  assert.ok(b.submitResponse(an, [{ questionId: "q1", value: true }]).ok);
+  { const rr = b.submitResponse(an, [{ questionId: "q1", value: true }]); assert.ok(rr.ok, JSON.stringify(rr) + " held=" + !!b.state().forms[an] + " joined=" + [...b.joined].join(",")); }
   const ev = b.log.filter((e) => e.type === "response.submit").pop();
   assert.notStrictEqual(ev.dev, b.deviceId, "no real device id on the wire"); assert.strictEqual(ev.hlc.dev, ev.dev);
   pump();

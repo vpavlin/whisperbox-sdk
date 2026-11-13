@@ -42,6 +42,7 @@ test("FR-1: a signed event replaced by a larger, earlier copy is charged its siz
   const base = { v: 1, id: "update:ghost5:n", type: "form.update", dev: "z", payload: { formId: "ghost5", author: z.address, form: { title: "s" } } };
   const sign = (ev) => ({ ...ev, ...C.signEvent(z, ev) });
   const now = Date.now();
+  a.importForm(`whisperbox://form?id=ghost5&by=${z.address}`);   // a form a opened: only those are kept (Václav 2026-11-13)
   const small = sign({ ...base, hlc: { wall: now, ctr: 9, dev: "z" } });
   const big = sign({ ...base, hlc: { wall: now, ctr: 1, dev: "z" }, payload: { ...base.payload, form: { title: "s", description: "L".repeat(60000) } } });
   a.ingest([frame(small)]); a.ingest([frame(big)]);

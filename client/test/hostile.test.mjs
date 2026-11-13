@@ -65,8 +65,8 @@ test("answer tags are random, links that can't be valid are refused", async () =
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const m = wire.shift(); a.ingest([m]); b.ingest([m]); } };
   const fid = a.createForm({ title: "tags", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
-  /* wire v2: the creator sent the form state on create */ pump();
   b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);   // answers need the creator a link names (FR-3)
+  /* wire v2: the creator sent the form state on create */ pump();
   assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "x" }]).ok); pump();
   const resp = a.log.find((e) => e.type === "response.submit");
   assert.ok(resp, "a got b's answer");
@@ -139,6 +139,7 @@ test("a sealed deep answer, a 1e300 limit and a bare-id answer are refused (FR-1
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const [from, m] = wire.shift(); (from === "a" ? b : a).ingest([m]); } };
   const fid = a.createForm({ title: "deep target", questions: [{ id: "q1", type: "text", text: "?" }] }).formId;
+  b.importForm(fid);   // FR-3 below: opened by its bare id (only opened forms are kept, Václav 2026-11-13)
   /* wire v2: the creator sent the form state on create */ pump(); pump();
   const pub = a.snapshot().state.forms[fid].publicKey;
   // FR-1: sealed to the form's public key, 50,000 deep inside
@@ -151,8 +152,7 @@ test("a sealed deep answer, a 1e300 limit and a bare-id answer are refused (FR-1
   // FR-2: maxResponses 1e300 fails the shape check
   assert.strictEqual(wellFormedFormFields({ title: "x", questions: [], maxResponses: 1e300 }), false);
   assert.strictEqual(wellFormedFormFields({ title: "x", questions: [], editWindowMinutes: 9.2e18 }), false);
-  // FR-3: b knows the form from catch-up only: no creator pinned, no answering
-  b.importForm(fid);   // opened by its bare id: shown, but no creator pinned
+  // FR-3: b opened it by its bare id: shown, but no creator pinned, no answering
   const bf = b.snapshot().state.forms[fid];
   assert.ok(bf.needsLink && !bf.canRespond, "needs the creator's link");
   assert.strictEqual(b.submitResponse(fid, [{ questionId: "q1", value: "x" }]).ok, false);

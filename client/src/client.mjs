@@ -106,6 +106,9 @@ export function netMsOf(meta, now) {
   // sender's own clock (Václav 2026-11-13, audit W2-11; as the core)
   if (!(t > 1e12) || t > now + MAX_CLOCK_LEAD_MS) return 0;
   if (meta.source !== "history" && t < now - MAX_CLOCK_LEAD_MS) return 0;
+  // a Store copy: never after we hold it, never before the 6 h window the core asks Stores for (the
+  // host doesn't tell us its window): a Store can't date an answer to 2003 (audit R3-3/R3-4)
+  if (meta.source === "history") return Math.floor(Math.min(now, Math.max(t, now - 6 * 3600000)));
   return Math.floor(t);
 }
 export const MAX_CLOCK_LEAD_MS = 5 * 60 * 1000;
@@ -284,7 +287,8 @@ export class WhisperboxClient {
     this.coAccepted = new Set(co?.accepted || []); this.coDeclined = new Set(co?.declined || []);
     if (!co) {
       const me = lc(this.identity?.address ?? "");
-      for (const e of this.log) if (e.type === EventType.FORM_COOWNER && lc(e.payload?.owner ?? "") === me) this.coAccepted.add(lc(e.payload?.formId ?? ""));
+      const st0 = this.state();   // only grants from the form's creator (R3-1)
+      for (const e of this.log) if (e.type === EventType.FORM_COOWNER && lc(e.payload?.owner ?? "") === me && lc(st0.forms[lc(e.payload?.formId ?? "")]?.creator ?? "") === lc(e.payload?.author ?? "")) this.coAccepted.add(lc(e.payload?.formId ?? ""));
       this.saveCoOwners();
     }
     // which network times came live (a Store's report never overrides those); before this: all of them
@@ -387,7 +391,7 @@ export class WhisperboxClient {
   }
   pullAll() {
     this.lastPullRound = this.now();
-    this._histLeft = 5000;   // events a pull may bring (audit R2-4)
+    this._histLeft = 5000; this._histSeen = 20000;   // events a pull may keep / make us look at (R2-4, R3-10)
     if (!this.pullHook || !this.nodeReady) return;
     try { Promise.resolve(this.pullHook()).then(() => this.emit(), () => {}); } catch { /* host */ }
   }
@@ -543,7 +547,9 @@ export class WhisperboxClient {
     if (env.type === "EVENTS" && Array.isArray(env.events)) {
       if (env.events.length > 2000) { this.diag.rxBad = (this.diag.rxBad || 0) + 1; return true; }
       if (this._rxLive !== false && !this.takeToken("ctl", 120)) { this.diag.ctlDropBudget = (this.diag.ctlDropBudget || 0) + 1; return true; }
-      for (const e of env.events) { try { this.ingestOne(e, true); } catch { this.diag.rxBad = (this.diag.rxBad || 0) + 1; } }
+      // publishes and co-owner grants first: a co-owner's receipt in the same bundle needs its grant (R3-6)
+      const first = (e) => e && (e.type === EventType.FORM_PUBLISH || e.type === EventType.FORM_COOWNER);
+      for (const e of [...env.events.filter(first), ...env.events.filter((x) => !first(x))]) { try { this.ingestOne(e, true); } catch { this.diag.rxBad = (this.diag.rxBad || 0) + 1; } }
       return true;
     }
     if (env.type === "ASK") {   // a live ASK only, and it costs a frame token (audit W2-3/W2-6)
@@ -569,10 +575,12 @@ export class WhisperboxClient {
       const held = this.held.get(key);
       const dup = held !== undefined && (isResp || compareHlc(e.hlc, held) >= 0);
       if (this._rxLive !== false && !(bundled && dup) && !this.takeToken(isResp ? "resp" : "sig", RESP_BUDGET)) { this.diag.admDropBudget = (this.diag.admDropBudget || 0) + 1; return false; }
+      // a Store pull: duplicates cost too (R3-10)
+      if (this._rxLive === false) { if ((this._histSeen ?? 20000) <= 0) { this.diag.storeDropCap = (this.diag.storeDropCap || 0) + 1; return false; } this._histSeen = (this._histSeen ?? 20000) - 1; }
       if (dup) { this.diag.rxDup++; if (isResp) this.resendReceiptFor(e); if (this.noteNetTime(e)) this.emit(); return false; }   // known without a scan or a verify
-      // a Store pull has its own event budget (audit R2-4)
-      if (this._rxLive === false) { if ((this._histLeft ?? 5000) <= 0) { this.diag.storeDropCap = (this.diag.storeDropCap || 0) + 1; return false; } this._histLeft = (this._histLeft ?? 5000) - 1; }
       if (!this.wanted(e)) { this.diag.admDropUnwanted = (this.diag.admDropUnwanted || 0) + 1; return false; }   // not a form or answer of mine: never stored
+      // a Store pull keeps at most 5,000 new events (R2-4), counted after the keep-filter (R3-10)
+      if (this._rxLive === false) { if ((this._histLeft ?? 5000) <= 0) { this.diag.storeDropCap = (this.diag.storeDropCap || 0) + 1; return false; } this._histLeft = (this._histLeft ?? 5000) - 1; }
       if (!this.admit(e)) return false;
       const eBytes = JSON.stringify(e).length;
       const oldBytes = held !== undefined ? (this.heldBytes.get(key) || 0) : 0;
@@ -603,7 +611,7 @@ export class WhisperboxClient {
       // reports, so one dishonest Store can't backdate an answer alone
       if (this.netLive.has(e.id) || (prev && prev >= t)) return false;
     } else {
-      if (this.netLive.has(e.id) && prev && prev <= t) return false;   // the earliest live copy
+      if (this.netLive.has(e.id) && prev) return false;   // the FIRST live copy received is final (audit R3-3)
       this.netLive.add(e.id);
     }
     this.netTimes[e.id] = t;
@@ -778,21 +786,21 @@ export class WhisperboxClient {
     if (!fid) return false;
     const p = e.payload || {};
     const author = lc((e.type === EventType.FORM_PUBLISH ? p.creator : p.author) ?? "");
-    if (e.type === EventType.FORM_COOWNER && lc(p.owner ?? "") === me) {   // a key shared with me: an invitation
-      if (this.coDeclined?.has(fid)) return false;
-      if (this.coAccepted?.has(fid)) return true;
-      return this.coInvites().length < 20;
-    }
     if (author === me) return true;   // my own
     const it = this.interest();
-    if (!(this.baseWants(fid) || it.mine.has(fid) || this.coAccepted?.has(fid))) return false;
-    // who may write what (audit R2-2, as the core)
     const pin = this.pins[fid] ? lc(this.pins[fid]) : "";
     const creator = pin || it.creator[fid] || "";
+    if (e.type === EventType.FORM_COOWNER && lc(p.owner ?? "") === me) {   // a key shared with me: an invitation
+      // only the creator can share its key (R3-1); creator unknown: a pending invitation, bounded
+      if (creator) return author === creator && (this.coAccepted?.has(fid) || this.coDeclined?.has(fid) || this.coInvites().length < 20);
+      return this.coInvites().length < 20;
+    }
+    if (!(this.baseWants(fid) || it.mine.has(fid) || this.coAccepted?.has(fid))) return false;
+    // who may write what (audit R2-2, as the core)
     if (e.type === EventType.FORM_PUBLISH) return (pin && author === pin) || (it.alts[fid] || 0) < 4;   // the link's creator; a few others, bounded
-    if (!creator) return true;
+    if (!creator) return false;   // no creator known yet: only its publishes and invitations (R3-5)
     if (author === creator) return true;
-    if (e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.RESPONSE_REPLY) return !!it.coOwners[fid]?.has(author);
+    if (e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.RESPONSE_REPLY) return !!it.coOwners[fid]?.has(author) || this.coOwnerGranted(fid, author);   // R3-6
     return false;
   }
   // Drop from the log what this client no longer keeps (on load, after a form is forgotten)
@@ -803,9 +811,11 @@ export class WhisperboxClient {
     // mine: keep them all rather than lose one (audit R2-8)
     const ownUnsure = Object.keys(this.mySubs || {}).some((f) => !this.myAnswers[f]?.eventId);
     this.respPerForm = {}; this._pruning = true; this._keyMissingKept = 0;
+    let unsureKept = 0;
     const kept = this.log.filter((e) => {
       const isResp = e.type === EventType.RESPONSE_SUBMIT;
-      const keep = this.wanted(e) || (isResp && ownUnsure);
+      let keep = this.wanted(e);
+      if (!keep && isResp && ownUnsure && unsureKept < 2000) { keep = true; unsureKept++; }   // bounded (R3-9)
       if (keep && isResp && this._wantedForm) this.respPerForm[this._wantedForm] = (this.respPerForm[this._wantedForm] || 0) + 1;
       return keep;
     });
@@ -905,12 +915,20 @@ export class WhisperboxClient {
   // an invitation until accepted: a creator could otherwise make any respondent store its form (audit R2-1)
   isCoOwner(f) { return f.creator !== this.identity.address && (f.coOwners || []).some((c) => c.address === this.identity.address) && !!this.coAccepted?.has(f.id); }
   /** Co-owner invitations: grants naming me for forms I haven't accepted or declined (audit R2-1). */
+  // the grant's author may share the form's key: it is the creator (link pin, else the fold), or none is known
+  grantFromCreator(fid, author) {
+    const creator = this.pins[fid] ? lc(this.pins[fid]) : (this.interest().creator[fid] || "");
+    return !creator || creator === lc(author || "");
+  }
+  coOwnerGranted(fid, who) {
+    return this.log.some((x) => x && x.type === EventType.FORM_COOWNER && lc(x.payload?.formId ?? "") === fid && lc(x.payload?.owner ?? "") === who && this.grantFromCreator(fid, x.payload?.author));
+  }
   coInvites() {
     const me = lc(this.identity?.address ?? ""), out = [], seen = new Set();
     for (const e of this.log) {
       if (!e || e.type !== EventType.FORM_COOWNER || lc(e.payload?.owner ?? "") !== me) continue;
       const fid = lc(e.payload?.formId ?? "");
-      if (this.coAccepted.has(fid) || this.coDeclined.has(fid) || seen.has(fid)) continue;
+      if (this.coAccepted.has(fid) || this.coDeclined.has(fid) || seen.has(fid) || !this.grantFromCreator(fid, e.payload?.author)) continue;   // R3-1
       seen.add(fid); out.push({ formId: fid, from: lc(e.payload?.author ?? ""), at: e.hlc?.wall || 0 });
     }
     return out;
@@ -919,7 +937,10 @@ export class WhisperboxClient {
   /** Accept a co-owner invitation: from then on the form and its answers are kept and pulled. */
   acceptCoOwner(formId) {
     formId = lc(formId);
-    if (!this.coInvites().some((x) => x.formId === formId) && !this.coDeclined.has(formId)) return { ok: false, error: "no co-owner invitation for this form" };
+    const me = lc(this.identity.address);
+    const g = this.log.find((x) => x && x.type === EventType.FORM_COOWNER && lc(x.payload?.formId ?? "") === formId && lc(x.payload?.owner ?? "") === me && this.grantFromCreator(formId, x.payload?.author));
+    if (!g) return { ok: false, error: "no co-owner invitation for this form" };
+    if (!this.pins[formId]) { this.pins[formId] = lc(g.payload.author); this.saveMeta(); }   // the creator I trust is the one who invited me (R3-14)
     this.coAccepted.add(formId); this.coDeclined.delete(formId); this.saveCoOwners();
     this._int = null; this._opened = null;
     if (this.nodeReady) { this.syncTopics(); this.pullAll(); }
@@ -929,6 +950,9 @@ export class WhisperboxClient {
   /** Decline an invitation, or stop co-owning a form: its events and answers go from this device. */
   leaveCoOwner(formId) {
     formId = lc(formId);
+    const me = lc(this.identity.address);
+    const invited = this.coAccepted.has(formId) || this.log.some((x) => x && x.type === EventType.FORM_COOWNER && lc(x.payload?.formId ?? "") === formId && lc(x.payload?.owner ?? "") === me);
+    if (!invited) return { ok: false, error: "no co-owner invitation for this form" };   // R3-7
     this.coAccepted.delete(formId); this.coDeclined.add(formId); this.saveCoOwners();
     this._int = null; this._opened = null;
     this.pruneUnwanted(); this.dropUnusedBuckets(); this.emit();

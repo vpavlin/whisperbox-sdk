@@ -16,7 +16,7 @@ test("netMsOf: ns or ms, nothing for none, nonsense or far future", () => {
   assert.strictEqual(netMsOf({ tsMs: N + 3600_000 }, N), 0);
 });
 
-test("a backdated answer the network saw after the close is out; an earlier copy brings it back", async () => {
+test("a backdated answer the network saw after the close is out; a Store claiming earlier cannot bring it back", async () => {
   let tA = N, tB = N;
   const wire = [];
   const store = mem();
@@ -40,16 +40,15 @@ test("a backdated answer the network saw after the close is out; an earlier copy
   assert.strictEqual((view().responses[fid] || []).length, 0, "dropped: the network saw it after the close");
   assert.strictEqual(view().dropped.reasons["form-closed"], 1);
 
-  // the store's copy of the original publish: earlier
+  // a Store claiming an earlier time can't override what the network showed live (audit R2-5)
   for (const m of sent) a.ingest([m], { ts: 0, tsMs: N + 8_000, source: "history" });
-  const r = view().responses[fid];
-  assert.strictEqual(r.length, 1, "the earlier network time puts it before the close");
-  assert.strictEqual(r[0].timeVerified, true); assert.strictEqual(r[0].receivedAt, N + 8_000);
-  // a later copy (re-served during catch-up) doesn't move it back
+  assert.strictEqual((view().responses[fid] || []).length, 0, "a Store's earlier report doesn't move a time seen live");
+  // a later live copy (re-served) doesn't move it either; the earliest live time stays
   for (const m of sent) a.ingest([m], { tsMs: N + 60_000 });
-  assert.strictEqual(view().responses[fid][0].receivedAt, N + 8_000);
+  assert.strictEqual(view().dropped.reasons["form-closed"], 1);
   await new Promise((r) => setTimeout(r, 300));   // saved once per burst (FR-6)
-  assert.ok(String(await store.get("wb-nettime")).includes(String(N + 8_000)), "kept across restarts");
+  assert.ok(String(await store.get("wb-nettime")).includes(String(N + 20_000)), "kept across restarts");
+  assert.ok(String(await store.get("wb-nettime-live")).length > 2, "...with which times came live");
 });
 
 test("without network time the answer keeps its HLC and is marked unverified time", async () => {

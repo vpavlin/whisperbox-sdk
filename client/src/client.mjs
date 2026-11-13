@@ -153,6 +153,8 @@ export const MAX_EVENT_BYTES = 256 * 1024;
 // What one event may be to be SENT (audit W2-1; as the core's kMaxWireEventBytes): Delivery refuses
 // over 150 KiB and the wire is base64 twice. Peers still accept up to MAX_EVENT_BYTES.
 export const MAX_WIRE_EVENT_BYTES = 80000;
+// one form's answers can't fill the node's cap (audit R2-3; as the core)
+export const MAX_ANSWERS_PER_FORM = 20000;
 const sendable = (e) => { try { return utf8Bytes(JSON.stringify(e)) <= MAX_WIRE_EVENT_BYTES; } catch { return false; } };
 /** A decoded frame, and how deep its JSON may nest (open-review FR-1). */
 export const MAX_FRAME_BYTES = 1 << 20;
@@ -218,6 +220,7 @@ export class WhisperboxClient {
     this.log = []; this.watched = new Set(); this.pins = {}; this.mySubs = {}; // formId → my receipt id ("" = legacy)
     this.identity = null; this.deviceId = ""; this.clock = null; this.cardKeys = new Map();
     this.hidden = new Set(); this.myAnswers = {};
+    this.coAccepted = new Set(); this.coDeclined = new Set(); this.netLive = new Set();   // co-owner invitations (R2-1), live net times (R2-5)
     this.drafts = {}; this.answerDrafts = {}; this.autoReceipts = new Set(); this.lastHousekeep = 0;
     this.seen = {};   // formId -> responses seen ("N new"); first sight = all seen
     this.nodeReady = false; this.listeners = new Set();
@@ -227,6 +230,7 @@ export class WhisperboxClient {
     // come from the host's transport. Time can be shrunk for tests (o.minuteMs).
     this.joinHook = o.join || null; this.pullHook = o.pull || null;
     this.minute = o.minuteMs || 60000; this.perEpoch = o.msgsPerEpoch || 10; this.republishMs = o.republishMs || 0;
+    this.maxPerForm = o.maxAnswersPerForm || MAX_ANSWERS_PER_FORM;   // R2-3 (tests lower it)
     this.joined = new Set(); this.outQ = []; this.outSeq = 0; this.rlnTokens = this.perEpoch; this.rlnAt = 0;
     this.formSentAt = {}; this.formClosedSends = {}; this.askSentAt = {}; this.askCount = {}; this.askAnsweredAt = {};
     this.lastPullRound = 0;
@@ -274,6 +278,18 @@ export class WhisperboxClient {
       const k = C.identityFromPriv((await this.secrets.get("wb-fk-" + fid)) || "");
       if (k) this.cardKeys.set(fid, k);
     }
+    // co-owner invitations: accepted / declined; on the first start with them, what I already
+    // co-owned stays co-owned
+    const co = parse(await this.store.get("wb-coowners"), null);
+    this.coAccepted = new Set(co?.accepted || []); this.coDeclined = new Set(co?.declined || []);
+    if (!co) {
+      const me = lc(this.identity?.address ?? "");
+      for (const e of this.log) if (e.type === EventType.FORM_COOWNER && lc(e.payload?.owner ?? "") === me) this.coAccepted.add(lc(e.payload?.formId ?? ""));
+      this.saveCoOwners();
+    }
+    // which network times came live (a Store's report never overrides those); before this: all of them
+    const nl = parse(await this.store.get("wb-nettime-live"), null);
+    this.netLive = new Set(Array.isArray(nl) ? nl : Object.keys(this.netTimes));
     this.pruneUnwanted();
     this.emit();
   }
@@ -344,13 +360,18 @@ export class WhisperboxClient {
     const dec = this._opened?.get(e?.payload?.encryptedPayload)?.dec;
     const cid = typeof dec?.confirmationId === "string" ? dec.confirmationId : "", fid = lc(String(dec?.formId ?? ""));
     if (!cid || !fid) return;
-    const r = this.log.find((x) => x.type === EventType.RESPONSE_CONFIRM && formIdOfEvent(x) === fid
+    const confirmed = this.log.some((x) => x.type === EventType.RESPONSE_CONFIRM && formIdOfEvent(x) === fid
       && (x.payload?.confirmationId === cid || (Array.isArray(x.payload?.confirmationIds) && x.payload.confirmationIds.includes(cid))));
-    if (!r) return;
+    if (!confirmed || !this.interest().mine.has(fid)) return;
+    // ONE receipt for this answer, not the batch it was in (audit R2-7); deterministic id, made once
+    const rid = responseConfirmId(fid, cid);
     this.rcptResentAt = this.rcptResentAt || {};
-    if (this.now() - (this.rcptResentAt[r.id] || 0) < 10 * this.minute) return;
-    this.rcptResentAt[r.id] = this.now();
-    this.queueReceipt(fid, r);
+    if (this.now() - (this.rcptResentAt[rid] || 0) < 10 * this.minute) return;
+    this.rcptResentAt[rid] = this.now();
+    let single = this.log.find((x) => x.id === rid && lc(x.payload?.author ?? "") === lc(this.identity.address));
+    // a new one: adopt() stores and sends it (broadcast -> queueReceipt); an old one: send it again
+    if (!single) this.adopt(this.buildEvent(EventType.RESPONSE_CONFIRM, rid, { formId: fid, confirmationId: cid, author: this.identity.address }, true));
+    else this.queueReceipt(fid, single);
   }
   relevantForms() {
     const out = new Set([...this.watched, ...Object.keys(this.mySubs), ...Object.keys(this.pins), ...Object.keys(this.answerDrafts), ...Object.keys(this.myAnswers)]);
@@ -366,6 +387,7 @@ export class WhisperboxClient {
   }
   pullAll() {
     this.lastPullRound = this.now();
+    this._histLeft = 5000;   // events a pull may bring (audit R2-4)
     if (!this.pullHook || !this.nodeReady) return;
     try { Promise.resolve(this.pullHook()).then(() => this.emit(), () => {}); } catch { /* host */ }
   }
@@ -395,7 +417,10 @@ export class WhisperboxClient {
       if (rf && this.rcptPending) delete this.rcptPending[rf];
       this.sendEnvelope(m.env, m.key, m.topic).then((ok) => {
         if (ok) return;
-        this.rlnTokens = Math.min(this.perEpoch, this.rlnTokens + 1); this.outQ.push(m);
+        this.rlnTokens = Math.min(this.perEpoch, this.rlnTokens + 1);
+        m.tries = (m.tries || 0) + 1;
+        if (m.tries >= 5) { this.diag.txDropped = (this.diag.txDropped || 0) + 1; return; }   // as the core: the schedules send it again later (R2-12)
+        this.outQ.push(m);
         if (rf) { this.rcptPending = this.rcptPending || {}; const pend = this.rcptPending[rf] || (this.rcptPending[rf] = []); for (const e of m.env.events || []) if (!pend.some((x) => x.id === e.id)) pend.push(e); }
       });
     }
@@ -545,6 +570,8 @@ export class WhisperboxClient {
       const dup = held !== undefined && (isResp || compareHlc(e.hlc, held) >= 0);
       if (this._rxLive !== false && !(bundled && dup) && !this.takeToken(isResp ? "resp" : "sig", RESP_BUDGET)) { this.diag.admDropBudget = (this.diag.admDropBudget || 0) + 1; return false; }
       if (dup) { this.diag.rxDup++; if (isResp) this.resendReceiptFor(e); if (this.noteNetTime(e)) this.emit(); return false; }   // known without a scan or a verify
+      // a Store pull has its own event budget (audit R2-4)
+      if (this._rxLive === false) { if ((this._histLeft ?? 5000) <= 0) { this.diag.storeDropCap = (this.diag.storeDropCap || 0) + 1; return false; } this._histLeft = (this._histLeft ?? 5000) - 1; }
       if (!this.wanted(e)) { this.diag.admDropUnwanted = (this.diag.admDropUnwanted || 0) + 1; return false; }   // not a form or answer of mine: never stored
       if (!this.admit(e)) return false;
       const eBytes = JSON.stringify(e).length;
@@ -553,11 +580,11 @@ export class WhisperboxClient {
       if (isResp ? (this.logResponses >= MAX_LOG_RESPONSES || this.logBytes + grow > MAX_LOG_BYTES) : (grow > 0 && this.logBytes + grow > MAX_LOG_BYTES + LOG_RESERVE_BYTES)) { this.diag.admDropFull = (this.diag.admDropFull || 0) + 1; return false; }
       this.noteNetTime(e);
       if (mergeOne(this.log, e)) {
-        this.logBytes += eBytes - oldBytes; if (held === undefined && isResp) this.logResponses++;
+        this.logBytes += eBytes - oldBytes;
+        if (held === undefined && isResp) { this.logResponses++; if (this._wantedForm) { this.respPerForm = this.respPerForm || {}; this.respPerForm[this._wantedForm] = (this.respPerForm[this._wantedForm] || 0) + 1; } }
         this.held.set(key, e.hlc); this.heldBytes.set(key, eBytes);
         if (isResp && !this.firstSeen[e.id]) { this.firstSeen[e.id] = this.now(); this.saveFirstSeenSoon(); }
-        // made a co-owner: the answers sent before were dropped (not openable then) - pull them again
-        if (e.type === EventType.FORM_COOWNER && lc(e.payload?.owner ?? "") === lc(this.identity?.address ?? "") && this.nodeReady) { this.syncTopics(); this.pullAll(); }
+        // a co-owner grant naming me is an invitation: nothing is pulled until it is accepted (R2-1)
         this.diag.rxNew++; this.clock.receive(e.hlc); this.saveLog(); this.emit();
       }
       else this.diag.rxDup++;
@@ -570,10 +597,18 @@ export class WhisperboxClient {
     const t = this._rxNetMs;
     if (!t || e.type !== EventType.RESPONSE_SUBMIT) return false;
     const prev = this.netTimes[e.id];
-    if (prev && prev <= t) return false;
+    this.netLive = this.netLive || new Set();
+    if (this._rxLive === false) {
+      // a Store's word (audit R2-5, as the core): never over a time seen live, and the LATEST any Store
+      // reports, so one dishonest Store can't backdate an answer alone
+      if (this.netLive.has(e.id) || (prev && prev >= t)) return false;
+    } else {
+      if (this.netLive.has(e.id) && prev && prev <= t) return false;   // the earliest live copy
+      this.netLive.add(e.id);
+    }
     this.netTimes[e.id] = t;
     // saved once per burst, not per copy (FR-6: a replayed answer rewrote the whole map each time)
-    if (!this.netSaveTimer) this.netSaveTimer = setTimeout(() => { this.netSaveTimer = null; this.store.set("wb-nettime", JSON.stringify(this.netTimes)).catch?.(() => {}); }, 250);
+    if (!this.netSaveTimer) this.netSaveTimer = setTimeout(() => { this.netSaveTimer = null; this.store.set("wb-nettime", JSON.stringify(this.netTimes)).catch?.(() => {}); this.store.set("wb-nettime-live", JSON.stringify([...this.netLive].filter((id) => id in this.netTimes))).catch?.(() => {}); }, 250);
     this.diag.netTs = (this.diag.netTs || 0) + 1;
     return true;
   }
@@ -704,36 +739,77 @@ export class WhisperboxClient {
     // a form of mine whose key isn't here (a Keycard key after a reinstall): its answers can't be told
     // from strangers' until the key is restored, so none is dropped meanwhile
     const keyMissing = Object.values(st.forms).some((f) => f.creator === who && f.publicKey && !keys.has(f.publicKey));
-    this._int = { n: this.log.length, who, mine, keys, keyMissing, nCard: this.cardKeys?.size || 0 };
+    const creator = {}, coOwners = {}, keyForm = {}, alts = {};
+    for (const f of Object.values(st.forms)) {
+      creator[f.id] = lc(f.creator || ""); coOwners[f.id] = new Set((f.coOwners || []).map((c) => lc(c.address || "")));
+      if (f.publicKey) keyForm[f.publicKey] = f.id;
+    }
+    for (const e of this.log) if (e.type === EventType.FORM_PUBLISH) { const f = formIdOfEvent(e); alts[f] = (alts[f] || 0) + 1; }
+    this._int = { n: this.log.length, who, mine, keys, keyMissing, nCard: this.cardKeys?.size || 0, creator, coOwners, keyForm, alts };
     return this._int;
   }
   wanted(e) {
+    this._wantedForm = "";
     if (!this.identity) return true;
+    const me = lc(this.identity.address);
     if (e.type === EventType.RESPONSE_SUBMIT) {
       for (const a of Object.values(this.myAnswers)) {   // mine: kept until its receipt, and re-sent
         if (a?.eventId === e.id) return true;
         for (const x of a?.earlier || []) if (x?.eventId === e.id) return true;
       }
       const hex = e.payload?.encryptedPayload;
-      const { keys, keyMissing } = this.interest();
-      if (keyMissing) return true;   // can't judge until the missing form key is back (then pruneUnwanted)
-      if (!keys.size || typeof hex !== "string") return false;
-      for (const k of keys.values()) { try { C.eciesOpen(k, hex); return true; } catch { /* not this key */ } }
+      const it = this.interest();
+      if (it.keyMissing) {
+        // a form key of mine isn't here yet (Keycard, after a reinstall): keep what can't be judged,
+        // but a bounded number, not the whole bucket (audit R2-10); a pull follows addFormKey
+        if (!this._pruning && (this._keyMissingKept = (this._keyMissingKept || 0) + 1) > 2000) return false;
+        return true;
+      }
+      if (!it.keys.size || typeof hex !== "string") return false;
+      for (const [pub, k] of it.keys) {
+        try { C.eciesOpen(k, hex); } catch { continue; }
+        this._wantedForm = it.keyForm[pub] || "";
+        if (!this._pruning && this._wantedForm && (this.respPerForm?.[this._wantedForm] || 0) >= this.maxPerForm) return false;   // R2-3
+        return true;
+      }
       return false;
     }
     const fid = formIdOfEvent(e);
     if (!fid) return false;
-    if (this.baseWants(fid)) return true;
-    const me = lc(this.identity.address), p = e.payload || {};
-    if (lc(p.creator ?? "") === me || lc(p.author ?? "") === me) return true;                        // my own
-    if (e.type === EventType.FORM_COOWNER && lc(p.owner ?? "") === me) return true;                   // a key shared with me
-    return this.interest().mine.has(fid);
+    const p = e.payload || {};
+    const author = lc((e.type === EventType.FORM_PUBLISH ? p.creator : p.author) ?? "");
+    if (e.type === EventType.FORM_COOWNER && lc(p.owner ?? "") === me) {   // a key shared with me: an invitation
+      if (this.coDeclined?.has(fid)) return false;
+      if (this.coAccepted?.has(fid)) return true;
+      return this.coInvites().length < 20;
+    }
+    if (author === me) return true;   // my own
+    const it = this.interest();
+    if (!(this.baseWants(fid) || it.mine.has(fid) || this.coAccepted?.has(fid))) return false;
+    // who may write what (audit R2-2, as the core)
+    const pin = this.pins[fid] ? lc(this.pins[fid]) : "";
+    const creator = pin || it.creator[fid] || "";
+    if (e.type === EventType.FORM_PUBLISH) return (pin && author === pin) || (it.alts[fid] || 0) < 4;   // the link's creator; a few others, bounded
+    if (!creator) return true;
+    if (author === creator) return true;
+    if (e.type === EventType.RESPONSE_CONFIRM || e.type === EventType.RESPONSE_REPLY) return !!it.coOwners[fid]?.has(author);
+    return false;
   }
   // Drop from the log what this client no longer keeps (on load, after a form is forgotten)
   pruneUnwanted() {
     if (!this.identity || !this.log.length) return 0;
     this._int = null; this.interest();   // from the whole log first: my own events always stay
-    const kept = this.log.filter((e) => this.wanted(e));
+    // my own answers are known by wb-myanswers; if it is behind wb-mysubs, an answer I can't open may be
+    // mine: keep them all rather than lose one (audit R2-8)
+    const ownUnsure = Object.keys(this.mySubs || {}).some((f) => !this.myAnswers[f]?.eventId);
+    this.respPerForm = {}; this._pruning = true; this._keyMissingKept = 0;
+    const kept = this.log.filter((e) => {
+      const isResp = e.type === EventType.RESPONSE_SUBMIT;
+      const keep = this.wanted(e) || (isResp && ownUnsure);
+      if (keep && isResp && this._wantedForm) this.respPerForm[this._wantedForm] = (this.respPerForm[this._wantedForm] || 0) + 1;
+      return keep;
+    });
+    this._pruning = false;
     const dropped = this.log.length - kept.length;
     if (!dropped) return 0;
     this.log = kept;
@@ -774,6 +850,7 @@ export class WhisperboxClient {
     await this.secrets.set("wb-fk-" + fid, C.toHex(k.priv));
     this.cardKeys.set(fid, k);
     this._int = null; this.pruneUnwanted();   // a restored key: answers kept meanwhile can be judged now
+    if (this.nodeReady) this.pullAll();        // ...and the ones dropped over the bound come back from Store (R2-10)
     await this.store.set("wb-fk-index", JSON.stringify([...this.cardKeys.keys()]));
     this.emit();
     return { ok: true, pubHex: k.pubHex };
@@ -825,7 +902,38 @@ export class WhisperboxClient {
     this.adopt(ue);
     return { ok: true, formId };
   }
-  isCoOwner(f) { return f.creator !== this.identity.address && (f.coOwners || []).some((c) => c.address === this.identity.address); }
+  // an invitation until accepted: a creator could otherwise make any respondent store its form (audit R2-1)
+  isCoOwner(f) { return f.creator !== this.identity.address && (f.coOwners || []).some((c) => c.address === this.identity.address) && !!this.coAccepted?.has(f.id); }
+  /** Co-owner invitations: grants naming me for forms I haven't accepted or declined (audit R2-1). */
+  coInvites() {
+    const me = lc(this.identity?.address ?? ""), out = [], seen = new Set();
+    for (const e of this.log) {
+      if (!e || e.type !== EventType.FORM_COOWNER || lc(e.payload?.owner ?? "") !== me) continue;
+      const fid = lc(e.payload?.formId ?? "");
+      if (this.coAccepted.has(fid) || this.coDeclined.has(fid) || seen.has(fid)) continue;
+      seen.add(fid); out.push({ formId: fid, from: lc(e.payload?.author ?? ""), at: e.hlc?.wall || 0 });
+    }
+    return out;
+  }
+  saveCoOwners() { this.store.set("wb-coowners", JSON.stringify({ accepted: [...this.coAccepted], declined: [...this.coDeclined] })).catch?.(() => {}); }
+  /** Accept a co-owner invitation: from then on the form and its answers are kept and pulled. */
+  acceptCoOwner(formId) {
+    formId = lc(formId);
+    if (!this.coInvites().some((x) => x.formId === formId) && !this.coDeclined.has(formId)) return { ok: false, error: "no co-owner invitation for this form" };
+    this.coAccepted.add(formId); this.coDeclined.delete(formId); this.saveCoOwners();
+    this._int = null; this._opened = null;
+    if (this.nodeReady) { this.syncTopics(); this.pullAll(); }
+    this.emit();
+    return { ok: true, formId };
+  }
+  /** Decline an invitation, or stop co-owning a form: its events and answers go from this device. */
+  leaveCoOwner(formId) {
+    formId = lc(formId);
+    this.coAccepted.delete(formId); this.coDeclined.add(formId); this.saveCoOwners();
+    this._int = null; this._opened = null;
+    this.pruneUnwanted(); this.dropUnusedBuckets(); this.emit();
+    return { ok: true, formId };
+  }
   coOwnedIds(st) { return Object.values(st.forms).filter((f) => this.isCoOwner(f)).map((f) => f.id); }
   /** Share a form's key with a co-owner (creator): they can read answers + send receipts.
    *  code = their co-owner code (33-byte compressed public key, hex). Can't be revoked. */
@@ -1276,7 +1384,7 @@ export class WhisperboxClient {
       nodeReady: this.nodeReady,
       // the sealed answers are opaque to a view and grew the snapshot with every blob (FR-3): a count
       state: (({ responses, ...rest }) => ({ ...rest, responseCount: responses.length }))(st), creatorView: cv, watched: [...this.watched],
-      pendingForms: (() => { const have = new Set(allIds); return [...this.watched].filter((id) => !have.has(id)); })(), mySubmissions: Object.keys(this.mySubs), hidden: [...this.hidden], drafts: Object.values(this.drafts),
+      pendingForms: (() => { const have = new Set(allIds); return [...this.watched].filter((id) => !have.has(id)); })(), mySubmissions: Object.keys(this.mySubs), hidden: [...this.hidden], coInvites: this.coInvites(), drafts: Object.values(this.drafts),
       diagnostics: { ...this.diag, logSize: this.log.length },
     };
   }

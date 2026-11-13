@@ -152,10 +152,16 @@ for (const layers of [1, 0]) {
 
       // 8. co-owners across implementations: desktop seals its form key to the phone
       assert.ok((await b.call("addCoOwner", [fL, phone.identity.pubHex])).ok);
+      // a grant is an invitation until accepted (audit R2-1)
+      assert.ok(await until(b, () => (phone.snapshot().coInvites || []).some((x) => x.formId === fL)), "phone gets the desktop's co-owner invitation");
+      assert.ok(!phone.snapshot().state.forms[fL]?.coOwner, "...not a co-owner yet");
+      assert.ok(phone.acceptCoOwner(fL).ok);
       assert.ok(await until(b, () => phone.snapshot().state.forms[fL]?.coOwner && (phone.snapshot().creatorView?.responses?.[fL] || []).length === 1),
         "phone opens the C++-sealed form key and reads the answer as co-owner");
       // ...and the phone seals its key to the desktop
       assert.ok(phone.addCoOwner(fQ, (await b.call("snapshot")).identity.pubHex).ok);
+      assert.ok(await until(b, async () => ((await b.call("snapshot")).coInvites || []).some((x) => x.formId === fQ)), "desktop gets the phone's invitation");
+      assert.ok((await b.call("acceptCoOwner", [fQ])).ok, "desktop accepts");
       assert.ok(await until(b, async () => ((await b.call("getDecryptedResponses", [fQ])).responses || []).length === 1), "desktop opens the JS-sealed form key as co-owner");
 
       // 9. quiz + private replies across implementations (keys + sealing in both directions)

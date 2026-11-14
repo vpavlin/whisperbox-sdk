@@ -98,3 +98,18 @@ test("W2-11: an answer backdated in its payload, sent after the close, is judged
   const v = a.decrypt(a.state());
   assert.strictEqual((v.responses[fid] || []).length, 0, "out: the network published it after the close");
 });
+
+test("R10-1/R10-2: an ASK makes the creator send at most 3 forms, 6 per 10 min in all; empty buckets are rate-limited too", async () => {
+  const { peers: [a], wire, advance } = await net(1);
+  const ids = []; for (let i = 0; ids.length < 5 && i < 5000; i++) { const id = "form-a" + i.toString(16); if (!ids.length || bucketOf(id) === bucketOf(ids[0])) ids.push(id); }
+  for (const id of ids) assert.ok(a.createForm({ ...q, id }).ok);
+  advance(11 * 60000); a.drain?.(); wire.length = 0;
+  a.ingest([bytes(JSON.stringify({ v: 2, type: "ASK", bucket: bucketOf(ids[0]) }))]); a.drain?.();
+  const sent = wire.filter((m) => m.from === a).length;
+  assert.ok(sent >= 1 && sent <= 3, "at most 3 forms for one ASK: " + sent);
+  wire.length = 0;
+  for (const b of "0123456789abcdef") a.ingest([bytes(JSON.stringify({ v: 2, type: "ASK", bucket: b }))]);
+  a.drain?.();
+  assert.ok(wire.filter((m) => m.from === a).length <= 3, "the bucket was answered already; others hold nothing");
+  assert.strictEqual(Object.keys(a.askAnsweredAt).length, 16, "every bucket is rate-limited, empty or not");
+});

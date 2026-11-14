@@ -490,12 +490,21 @@ export class WhisperboxClient {
       : typeof env.formId === "string" && env.formId && env.formId.length <= 128 ? bucketOf(lc(env.formId)) : "";
     if (!b) return;
     this.askAnsweredAt = this.askAnsweredAt || {};
-    if (this.askAnsweredAt[b] && this.now() - this.askAnsweredAt[b] < 10 * this.minute) return;
+    const now = this.now(), win = 10 * this.minute;
+    if (this.askAnsweredAt[b] && now - this.askAnsweredAt[b] < win) return;
+    this.askAnsweredAt[b] = now;   // empty buckets too: an ASK costs at most one scan per bucket (audit R10-2)
+    // bounded (audit R10-1: one ASK re-published every open form in the bucket): the least recently sent
+    // first, at most 3 per ASK and 6 per 10 min in all (a form just sent may still be missing from Store)
+    this.askSends = (this.askSends || []).filter((t) => now - t < win);
     const st = this.state(), who = this.identity?.address;
-    const mine = Object.values(st.forms).filter((f) => (f.creator === who || this.isCoOwner(f)) && f.status === "open" && bucketOf(f.id) === b);
-    if (!mine.length) return;   // only the creator side answers
-    this.askAnsweredAt[b] = this.now();
-    for (const f of mine) this.publishFormState(f.id, 3);
+    const mine = Object.values(st.forms)
+      .filter((f) => (f.creator === who || this.isCoOwner(f)) && f.status === "open" && bucketOf(f.id) === b)
+      .sort((x, y) => (this.formSentAt[x.id] || 0) - (this.formSentAt[y.id] || 0));
+    for (const f of mine.slice(0, 3)) {
+      if (this.askSends.length >= 6) break;
+      this.askSends.push(now);
+      this.publishFormState(f.id, 3);
+    }
   }
   // When the next retry of an answer is due after send number k (0 = the first): 10 min x5, hourly x4,
   // then 6-hourly, each +/-30% at random (privacy review F4; as the core)

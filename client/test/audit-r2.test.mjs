@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert";
 import { WhisperboxClient, wireTopicFor } from "../src/client.mjs";
 import * as C from "../../contract/src/crypto-portable.mjs";
-import { responseSubmitId, responseConfirmId, receiptTag, responseReceiptId } from "../../contract/src/events.mjs";
+import { responseSubmitId, responseConfirmId } from "../../contract/src/events.mjs";
 
 const mem = () => { const m = new Map(); return { get: async (k) => m.get(k) ?? null, set: async (k, v) => { m.set(k, v); } }; };
 const bytes = (s) => new TextEncoder().encode(s);
@@ -78,8 +78,8 @@ test("R2-7: a retried answer gets ONE receipt again, not the batch it was in", a
   a.ingest([frame(mine)]);   // b's retry
   a.drain();
   const sent = wire.filter((m) => m.from === a).flatMap((m) => JSON.parse(new TextDecoder().decode(m.bytes)).events || []);
-  const tag = receiptTag(fid, cid);
-  assert.ok(sent.length === 1 && sent[0].id === responseReceiptId([tag]) && sent[0].payload.tags.length === 1 && sent[0].payload.tags[0] === tag, "one single-answer receipt: " + JSON.stringify(sent.map((e) => e.id)));
+  const tag = b.answerSecret(b.state(), fid, cid, null).tag;   // receipts v3 (ADR 0027): one real entry + one decoy
+  assert.ok(sent.length === 1 && sent[0].type === "response.receipt" && sent[0].payload.r.length === 2 && sent[0].payload.r.filter((x) => x.t === tag).length === 1, "one single-answer receipt: " + JSON.stringify(sent.map((e) => e.id)));
 });
 
 test("R2-8: with my answers' record missing, the prune keeps answers it can't place", async () => {

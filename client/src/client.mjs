@@ -12,10 +12,10 @@
 import { mergeOne, mergeWhisperbox, eventKey } from "../../contract/src/merge.mjs";
 import { Clock, MAX_HLC_CTR, compareHlc } from "../../contract/src/hlc.mjs";
 import { TOPIC, EventType, formPublishId, responseSubmitId, responseConfirmId, formCloseId, formReopenId, formUpdateId, formCoOwnerId, responseConfirmBatchId, responseReplyId,
-  receiptTag, replyTag, responseReceiptId, isReceiptTag, MAX_RECEIPT_TAGS } from "../../contract/src/events.mjs";
+  responseReceiptId, isReceiptTag, isReceiptProof, MAX_RECEIPT_TAGS } from "../../contract/src/events.mjs";
 import * as C from "../../contract/src/crypto-portable.mjs";
 import { validateAnswers, emptyAnswer as emptyAnswerOf, scoreAnswers } from "../../contract/src/answers.mjs";
-import { computeState, creatorView, maxPerRespondentOf, resolveReceipts } from "../../engine/src/engine.mjs";
+import { computeState, creatorView, maxPerRespondentOf, resolveReceipts, validConfirmationId } from "../../engine/src/engine.mjs";
 import { buildInitial, respond } from "../../loam-sync-pkg/dist/catchup.js";
 
 // how far a network time may be from the answer's own HLC and still count (R5-3, as the core)
@@ -195,8 +195,10 @@ export function wellFormedEvent(e) {
   if (e.type === EventType.RESPONSE_SUBMIT) return isStr(p, "encryptedPayload", MAX_EVENT_BYTES) && p.encryptedPayload.length % 2 === 0 && /^[0-9a-f]*$/.test(p.encryptedPayload) && e.id === responseSubmitId(p.encryptedPayload);
   if (e.type === EventType.FORM_PUBLISH) return isStr(p, "id", 128) && isStr(p, "creator", 64) && optStr(p, "publicKey", 256) && wellFormedFormFields(p) && e.id === formPublishId(p.id);
   // a blinded receipt (ADR 0026): tags only, never signed (a signature would name its sender)
-  if (e.type === EventType.RESPONSE_RECEIPT) return !e.pub && !e.sig && Object.keys(p).length === 1 && Array.isArray(p.tags)
-    && p.tags.length > 0 && p.tags.length <= MAX_RECEIPT_TAGS && p.tags.every(isReceiptTag) && new Set(p.tags).size === p.tags.length && e.id === responseReceiptId(p.tags);
+  if (e.type === EventType.RESPONSE_RECEIPT) return !e.pub && !e.sig && Object.keys(p).length === 1 && Array.isArray(p.r)
+    && p.r.length > 0 && p.r.length <= MAX_RECEIPT_TAGS
+    && p.r.every((x) => isObj(x) && Object.keys(x).length === 2 && isReceiptTag(x.t) && isReceiptProof(x.s))
+    && new Set(p.r.map((x) => x.t)).size === p.r.length && e.id === responseReceiptId(p.r);
   if (!isStr(p, "formId", 128) || !isStr(p, "author", 64)) return false;
   if (e.type === EventType.RESPONSE_CONFIRM) {
     if ("confirmationIds" in p) return Array.isArray(p.confirmationIds) && p.confirmationIds.length <= 1000 && p.confirmationIds.every((c) => typeof c === "string" && c.length <= 128);
@@ -359,10 +361,11 @@ export class WhisperboxClient {
   // never in the form state; receipts made while one waits in the queue join it (one frame per form)
   queueReceipt(fid, e) {
     this.rcptPending = this.rcptPending || {};
-    const pend = this.rcptPending[fid] || (this.rcptPending[fid] = []);
+    const topic = wireTopicFor(fid);   // per bucket, not per form: one frame hides each form's count (ADR 0027)
+    const pend = this.rcptPending[topic] || (this.rcptPending[topic] = []);
     if (pend.some((x) => x.id === e.id)) return;
     pend.push(e);
-    this.sendEvents(fid, pend, 2, "rcpt:" + fid);
+    this.sendEvents(fid, pend, 2, "rcpt:" + topic);
   }
   // A copy of an answer I hold and confirmed: the respondent is still retrying, so my receipt didn't
   // reach it - send that one receipt again, at most every 10 minutes
@@ -371,20 +374,18 @@ export class WhisperboxClient {
     const cid = typeof dec?.confirmationId === "string" ? dec.confirmationId : "", fid = lc(String(dec?.formId ?? ""));
     if (!cid || !fid) return;
     if (!this.interest().mine.has(fid)) return;
-    const tag = receiptTag(fid, cid);
-    const confirmed = this.log.some((x) => (x.type === EventType.RESPONSE_RECEIPT && (x.payload?.tags || []).includes(tag))
-      || (x.type === EventType.RESPONSE_CONFIRM && formIdOfEvent(x) === fid
-        && (x.payload?.confirmationId === cid || (Array.isArray(x.payload?.confirmationIds) && x.payload.confirmationIds.includes(cid)))));
-    if (!confirmed) return;
-    // ONE receipt for this answer, not the batch it was in (audit R2-7); deterministic id, made once
-    const named = this.namedReceipts(fid);
-    const rid = named ? responseConfirmId(fid, cid) : responseReceiptId([tag]);
+    if (!(this.state().forms[fid]?.confirmations || []).includes(cid)) return;   // not confirmed (named or verified blinded)
+    // ONE receipt for this answer, not the batch it was in (audit R2-7); a fresh one, at most every 10 min
+    const key = fid + "|" + cid;
     this.rcptResentAt = this.rcptResentAt || {};
-    if (this.now() - (this.rcptResentAt[rid] || 0) < 10 * this.minute) return;
-    this.rcptResentAt[rid] = this.now();
-    const single = this.log.find((x) => x.id === rid && (!named || lc(x.payload?.author ?? "") === lc(this.identity.address)));
-    if (!single) this.emitReceipts(fid, [cid]);   // a new one: stored and sent
-    else this.queueReceipt(fid, single);          // an old one: sent again
+    if (this.now() - (this.rcptResentAt[key] || 0) < 10 * this.minute) return;
+    // and at most 30 re-sends per 10 minutes in all: old respondents can't read new receipts and keep
+    // retrying (audit R6-9)
+    this.rcptResends = (this.rcptResends || []).filter((t) => this.now() - t < 10 * this.minute);
+    if (this.rcptResends.length >= 30) return;
+    this.rcptResends.push(this.now());
+    this.rcptResentAt[key] = this.now();
+    this.emitReceipts(fid, [cid]);
   }
   relevantForms() {
     const out = new Set([...this.watched, ...Object.keys(this.mySubs), ...Object.keys(this.pins), ...Object.keys(this.answerDrafts), ...Object.keys(this.myAnswers)]);
@@ -474,6 +475,12 @@ export class WhisperboxClient {
     this.askAnsweredAt[fid] = this.now();
     this.publishFormState(fid, 3);
   }
+  // When the next retry of an answer is due after send number k (0 = the first): 10 min x5, hourly x4,
+  // then 6-hourly, each +/-30% at random (privacy review F4; as the core)
+  retryNextAt(k) {
+    const r = parseInt(C.randomHex(2), 16) / 65535;
+    return this.now() + Math.floor((k < 5 ? 10 : k < 9 ? 60 : 360) * this.minute * (0.7 + 0.6 * r));
+  }
   /** The schedule (ADR 0024): hourly re-publish (creator), ASK for missing forms, answer retries until the receipt. */
   wireSchedule() {
     if (!this.nodeReady) return;
@@ -511,11 +518,15 @@ export class WhisperboxClient {
         const first = a.submittedAt || 0;
         if (!first || now - first > 14 * 24 * 60 * minute) continue;
         const n = a.retries || 0;
-        const due = !a.sent ? 0 : first + minute * (n < 9 ? retryAt[n] : 290 + 360 * (n - 8));
+        if (a.sent && f.anonymous && n >= 5) continue;   // anonymous forms: about an hour of retries (F4, as the core)
+        // due at the jittered time set when last sent (F4: +/-30%); older entries: the fixed schedule
+        const due = !a.sent ? 0 : Number.isInteger(a.nextAt) ? a.nextAt : first + minute * (n < 9 ? retryAt[n] : 290 + 360 * (n - 8));
         if (now < due) continue;
         const e = this.log.find((x) => x.id === a.eventId); if (!e) continue;
         this.sendEvents(fid, [e], a.sent ? 6 : 1, "ans:" + a.eventId);
+        const k = a.sent ? n + 1 : 0;
         if (a.sent) a.retries = n + 1; else a.sent = true;
+        a.nextAt = this.retryNextAt(k);
         dirty = true;
       }
     }
@@ -806,14 +817,12 @@ export class WhisperboxClient {
     const creator = pin || it.creator[fid] || "";
     if (e.type === EventType.FORM_COOWNER && lc(p.owner ?? "") === me) {   // a key shared with me: an invitation
       // only the creator can share its key (R3-1); creator unknown: a pending invitation, bounded
-      if (creator) return author === creator && (this.coAccepted?.has(fid) || this.coDeclined?.has(fid) || this.pendingGrants() < 20);
+      // the creator a link named (R6-5: a first publish proves nothing); without a link, pending (<= 20 forms)
+      if (pin) return author === pin && (this.coAccepted?.has(fid) || this.coDeclined?.has(fid) || this.pendingGrants() < 20);
+      if (this.coAccepted?.has(fid)) return !!creator && author === creator;   // accepted before 1.1.4 (no link)
       return this.pendingGrants() < 20;
     }
-    // a form I'm invited to (not declined): its publishes, so its creator is known - only then is the
-    // invitation shown or acceptable (R5-1, as the core)
-    const invitedTo = e.type === EventType.FORM_PUBLISH && !this.coDeclined?.has(fid)
-      && this.log.some((x) => x && x.type === EventType.FORM_COOWNER && lc(x.payload?.formId ?? "") === fid && lc(x.payload?.owner ?? "") === me);
-    if (!(this.baseWants(fid) || it.mine.has(fid) || this.coAccepted?.has(fid) || invitedTo)) return false;
+    if (!(this.baseWants(fid) || it.mine.has(fid) || this.coAccepted?.has(fid))) return false;
     // who may write what (audit R2-2, as the core)
     if (e.type === EventType.FORM_PUBLISH) {
       if (pin && author === pin) return true;   // the link's creator
@@ -872,56 +881,136 @@ export class WhisperboxClient {
   }
   state() {
     const st = computeState(this.log, { identity: this.identity.address, prefer: this.pins });
-    return st.receiptTags ? resolveReceipts(st, this.receiptPairs(st)) : st;   // blinded receipts I can name (ADR 0026)
+    return st.receiptTags ? resolveReceipts(st, this.verifiedReceipts(st)) : st;   // blinded receipts I can verify (ADR 0027)
   }
-  // [formId, confirmationId] of every answer this device can name: its own, and those it opened as the
-  // form's creator or co-owner (ADR 0026). Only these can be matched to a blinded receipt's tags.
+  // ── Blinded receipts v3 (ADR 0027) ──
+  // The per-answer secret S (cached: an ECDH each): the respondent's from its reply key and the form's
+  // public key, an owner's from the form key and the answer's reply key. null = can't be computed.
+  answerSecret(st, formId, cid, replyPub) {
+    this._rsec = this._rsec || new Map();
+    const f = st.forms[formId];
+    if (!f || !f.publicKey) return null;
+    const k = formId + "|" + cid + "|" + (replyPub || "") + "|" + f.publicKey;
+    if (this._rsec.has(k)) return this._rsec.get(k);
+    let v = null;
+    try {
+      let S = null;
+      if (replyPub) { const fk = this.formKeys(st).get(f.publicKey); if (fk) S = C.receiptSecret(fk.priv, C.fromHex(replyPub)); }
+      else S = C.receiptSecret(C.deriveReplyKey(this.identity, formId, cid).priv, C.fromHex(f.publicKey));
+      if (S) v = { S, tag: C.receiptTagOf(S), rtag: C.replyTagOf(S) };
+    } catch { v = null; }
+    if (this._rsec.size >= 60000) this._rsec.clear();
+    this._rsec.set(k, v);
+    return v;
+  }
+  // Every answer this device can name, with its secret: its own (reply key) and those it opened as the
+  // form's creator or co-owner (the answer's reply key). [{formId, cid, S, tag, rtag}]
+  // cached until an answer arrives, my answers or my keys change - not per log event (audit R6-2, R6-7)
   receiptPairs(st) {
+    const key = [this.identity?.address, this.logResponses, Object.keys(this.mySubs || {}).length, Object.values(this.myAnswers || {}).reduce((n, a) => n + 1 + (a?.earlier?.length || 0), 0),
+      this.coAccepted?.size || 0, this.cardKeys?.size || 0, Object.keys(this.pins || {}).length, Object.keys(st.forms).length].join("|");
+    if (this._rpairs && this._rpairs.key === key) return this._rpairs.list;
+    const list = this.receiptPairsUncached(st);
+    this._rpairs = { key, list };
+    return list;
+  }
+  receiptPairsUncached(st) {
     const out = [];
-    for (const fid of new Set([...Object.keys(this.mySubs || {}), ...Object.keys(this.myAnswers || {})])) for (const c of this.myCidsFor(fid)) out.push([fid, c]);
+    for (const fid of new Set([...Object.keys(this.mySubs || {}), ...Object.keys(this.myAnswers || {})])) {
+      if (!st.forms[fid]) continue;
+      for (const c of this.myCidsFor(fid)) { const v = this.answerSecret(st, fid, c, null); if (v) out.push({ formId: fid, cid: c, ...v }); }
+    }
     const who = this.identity?.address;
     if (who && Object.values(st.forms).some((f) => f.creator === who || this.isCoOwner(f))) {
       const keys = this.formKeys(st);
       if (keys.size) for (const e of this.log) {
         if (e.type !== EventType.RESPONSE_SUBMIT) continue;
         const d = this.openWith(keys, st, e.payload.encryptedPayload);
-        if (d && typeof d.confirmationId === "string" && d.confirmationId) out.push([lc(String(d.formId)), d.confirmationId]);
+        // a receipt id of 1-128 characters only: a huge one went into confirmations (audit R6-3)
+        if (!d || !validConfirmationId(d.confirmationId) || typeof d.replyPub !== "string" || !C.validPubPoint(d.replyPub)) continue;
+        const fid = lc(String(d.formId)), v = this.answerSecret(st, fid, d.confirmationId, d.replyPub.toLowerCase());
+        if (v) out.push({ formId: fid, cid: d.confirmationId, ...v });
       }
+    }
+    return out;
+  }
+  // A proof counts only if signed by the form's creator or a co-owner; the earliest signed time wins.
+  proofAt(st, pair, s) {
+    this._rproof = this._rproof || new Map();
+    const k = pair.tag + "|" + s;
+    let o = this._rproof.get(k);
+    if (o === undefined) { o = C.openReceiptProof(pair.S, pair.formId, pair.cid, s); if (this._rproof.size >= 60000) this._rproof.clear(); this._rproof.set(k, o); }
+    if (!o) return null;
+    const f = st.forms[pair.formId];
+    const ok = f && (o.by === f.creator || (f.coOwners || []).some((c) => lc(c.address || "") === o.by));
+    return ok ? o.at : null;
+  }
+  verifiedReceipts(st) {
+    const out = [];
+    for (const pr of this.receiptPairs(st)) {
+      if (st.forms[pr.formId]?.showResponseCount) continue;   // its public count is named receipts only (audit R6-6)
+      let at = null;
+      for (const x of st.receiptTags[pr.tag] || []) { const a = this.proofAt(st, pr, x.s); if (a !== null && (at === null || a < at)) at = a; }
+      if (at !== null) out.push([pr.formId, pr.cid, at]);
     }
     return out;
   }
   // a form that shows respondents the answer count counts PUBLIC receipts: there they stay named (ADR 0026)
   // (from the cached interest view: resendReceiptFor runs per duplicate answer, a fold each was a DoS)
   namedReceipts(formId) { return this.interest().showCount.has(formId); }
-  // a blinded receipt is kept only if one of its tags is for an answer I can name (ADR 0026)
+  // a blinded receipt is kept only if one of its entries is a valid proof for an answer I can name
+  // ...and only if it brings a valid proof this node doesn't hold yet: a seen proof replayed with junk
+  // entries used to be kept again and again (audit R6-1)
   receiptWanted(e) {
     const who = this.identity?.address;
     if (!this._rint || this._rint.n !== this.log.length || this._rint.who !== who) {
       const st = computeState(this.log, { identity: who, prefer: this.pins });
-      this._rint = { n: this.log.length, who, tags: new Set(this.receiptPairs(st).map(([f, c]) => receiptTag(f, c))) };
+      this._rint = { n: this.log.length, who, st, byTag: null };
     }
-    return (e.payload?.tags || []).some((t) => this._rint.tags.has(t));
+    const st = this._rint.st;
+    const pairs = this.receiptPairs(st);
+    if (!this._rint.byTag || this._rint.pairs !== pairs) { this._rint.byTag = new Map(pairs.map((pr) => [pr.tag, pr])); this._rint.pairs = pairs; }
+    return (e.payload?.r || []).some((x) => {
+      const pr = this._rint.byTag.get(x?.t);
+      if (!pr || (!this._pruning && (st.receiptTags?.[x.t] || []).some((y) => y.s === x.s))) return false;   // the prune judges what is held
+      return this.proofAt(st, pr, x.s) !== null;
+    });
   }
-  // Receipts for these answers of formId, blinded (ADR 0026): unsigned, a fresh device tag, no form id
-  // and no author on the wire - tags only. At most MAX_RECEIPT_TAGS per event. Sent on their own.
+  // Receipts for these answers of formId, blinded (ADR 0026/0027): unsigned, a random device tag, a
+  // 10-minute HLC, no form id and no author on the wire; per answer a tag + a sealed proof signed by me
+  // (creator or co-owner), padded with decoys to a power of two. An answer without a reply key (before
+  // 0.3.9) gets a named receipt. Sent on their own, per bucket.
   emitReceipts(formId, cids) {
     let n = 0;
     const all = [...new Set(cids.filter((c) => typeof c === "string" && c))];
-    if (this.namedReceipts(formId)) {   // the creator chose to show the count: receipts stay public, signed
-      for (let i = 0; i < all.length; i += 100) {
-        const ids = all.slice(i, i + 100);
-        const e = ids.length === 1
-          ? this.buildEvent(EventType.RESPONSE_CONFIRM, responseConfirmId(formId, ids[0]), { formId, confirmationId: ids[0], author: this.identity.address }, true)
-          : this.buildEvent(EventType.RESPONSE_CONFIRM, responseConfirmBatchId(formId, ids), { formId, confirmationIds: ids, author: this.identity.address }, true);
+    const named = (ids) => {
+      for (let i = 0; i < ids.length; i += 100) {
+        const b = ids.slice(i, i + 100);
+        const e = b.length === 1
+          ? this.buildEvent(EventType.RESPONSE_CONFIRM, responseConfirmId(formId, b[0]), { formId, confirmationId: b[0], author: this.identity.address }, true)
+          : this.buildEvent(EventType.RESPONSE_CONFIRM, responseConfirmBatchId(formId, b), { formId, confirmationIds: b, author: this.identity.address }, true);
         if (!this.adopt(e)) break;   // adopt -> broadcast -> queueReceipt
         n++;
       }
-      return n;
+    };
+    if (this.namedReceipts(formId)) { named(all); return n; }   // the creator chose to show the count
+    const st = this.state();
+    const rp = new Map();
+    for (const r of this.decrypt(st).responses[formId] || []) if (r.replyPub) rp.set(confirmIdOf(r, formId), r.replyPub);
+    const blind = [], legacy = [];
+    for (const c of all) {
+      const v = rp.has(c) ? this.answerSecret(st, formId, c, rp.get(c)) : null;
+      if (v) blind.push({ c, v }); else legacy.push(c);
     }
-    for (let i = 0; i < all.length; i += MAX_RECEIPT_TAGS) {
-      const tags = all.slice(i, i + MAX_RECEIPT_TAGS).map((c) => receiptTag(formId, c));
-      const tag = "wb-" + C.randomHex(6);
-      const e = { v: 1, id: responseReceiptId(tags), type: EventType.RESPONSE_RECEIPT, hlc: { wall: this.now(), ctr: 0, dev: tag }, dev: tag, payload: { tags } };
+    if (legacy.length) named(legacy);
+    const at = this.now(), REAL = MAX_RECEIPT_TAGS / 2;
+    for (let i = 0; i < blind.length; i += REAL) {
+      const entries = blind.slice(i, i + REAL).map(({ c, v }) => ({ t: v.tag, s: C.sealReceiptProof(v.S, this.identity, formId, c, at) }));
+      let size = 2; while (size < entries.length) size *= 2;
+      while (entries.length < size) entries.push(C.decoyReceiptEntry());
+      entries.sort((a, b) => (a.t < b.t ? -1 : 1));   // decoys aren't last
+      const tag = "wb-" + C.randomHex(6), wall = Math.floor(at / 600000) * 600000;
+      const e = { v: 1, id: responseReceiptId(entries), type: EventType.RESPONSE_RECEIPT, hlc: { wall, ctr: 0, dev: tag }, dev: tag, payload: { r: entries } };
       if (!this.adopt(e)) break;
       this.queueReceipt(formId, e); n++;
     }
@@ -1000,17 +1089,15 @@ export class WhisperboxClient {
     const creator = this.pins[fid] ? lc(this.pins[fid]) : (this.interest().creator[fid] || "");
     return !creator || creator === lc(author || "");
   }
-  // who invited me to fid: the form's KNOWN creator (link pin, else the fold), if a grant of theirs names
-  // me; else nobody. No publish yet = no inviter (R5-1); a stranger's grant is ignored (R5-2). As the core.
+  // who invited me to fid: the creator the form's LINK named (by=), if a grant of theirs names me; else
+  // nobody. A bare id proves nothing: a fake first publish was "the creator" (R5-1, R6-5). As the core.
   inviterOf(fid) {
     const me = lc(this.identity?.address ?? "");
-    const creator = this.pins[fid] ? lc(this.pins[fid]) : (this.interest().creator[fid] || "");
+    const creator = this.pins[fid] ? lc(this.pins[fid]) : "";
     if (!creator) return "";
     return this.log.some((x) => x && x.type === EventType.FORM_COOWNER && lc(x.payload?.formId ?? "") === fid
       && lc(x.payload?.owner ?? "") === me && lc(x.payload?.author ?? "") === creator) ? creator : "";
   }
-  // published by more than one key and no link chose the creator (R5-1)
-  contestedUnpinned(fid) { return !this.pins[fid] && this.interest().contested.has(fid); }
   // forms with a grant naming me that I haven't accepted or declined, shown or not (bounds held invitations)
   pendingGrants() {
     const me = lc(this.identity?.address ?? ""), forms = new Set();
@@ -1030,12 +1117,11 @@ export class WhisperboxClient {
       if (!e || e.type !== EventType.FORM_COOWNER || lc(e.payload?.owner ?? "") !== me) continue;
       const fid = lc(e.payload?.formId ?? "");
       if (this.coAccepted.has(fid) || this.coDeclined.has(fid) || seen.has(fid)) continue;
-      const from = this.inviterOf(fid);   // the known creator's grant only (R3-1, R5-1, R5-2)
-      if (!from || lc(e.payload?.author ?? "") !== from) continue;
+      const from = this.inviterOf(fid);   // the link's creator only (R3-1, R5-1, R5-2, R6-5)
+      if (from && lc(e.payload?.author ?? "") !== from) continue;
       seen.add(fid);
-      const inv = { formId: fid, from, at: e.hlc?.wall || 0 };
-      if (this.contestedUnpinned(fid)) inv.contested = true;   // shown, but accepting needs the creator's link
-      out.push(inv);
+      // no link opened yet: shown, but accepting needs the creator's link (it names who made the form)
+      out.push(from ? { formId: fid, from, at: e.hlc?.wall || 0 } : { formId: fid, needsLink: true, at: e.hlc?.wall || 0 });
     }
     return out;
   }
@@ -1043,8 +1129,11 @@ export class WhisperboxClient {
   /** Accept a co-owner invitation: from then on the form and its answers are kept and pulled. */
   acceptCoOwner(formId) {
     formId = lc(formId);
-    if (!this.inviterOf(formId)) return { ok: false, error: "no co-owner invitation for this form (yet) - if one was sent, its form hasn't arrived" };
-    if (this.contestedUnpinned(formId)) return { ok: false, error: "more than one person published this form - open the creator's link to accept" };
+    if (!this.inviterOf(formId)) {
+      const me = lc(this.identity.address);
+      const invited = this.log.some((x) => x && x.type === EventType.FORM_COOWNER && lc(x.payload?.formId ?? "") === formId && lc(x.payload?.owner ?? "") === me);
+      return { ok: false, error: invited ? "open the form's link from its creator first - an invitation alone doesn't prove who made the form" : "no co-owner invitation for this form" };
+    }
     // no pin (R4-1): the fold decides the creator; the grant counts only if its author is that creator
     this.coAccepted.add(formId); this.coDeclined.delete(formId); this.saveCoOwners();
     this._int = null; this._opened = null;
@@ -1215,7 +1304,7 @@ export class WhisperboxClient {
     this.saveMeta();
     if (this.answerDrafts[formId]) { delete this.answerDrafts[formId]; this.saveDrafts(); }
     this.adopt(e);
-    if (this.nodeReady) { this.sendEvents(formId, [e], 1, "ans:" + e.id); this.myAnswers[formId].sent = true; this.saveMeta(); }
+    if (this.nodeReady) { this.sendEvents(formId, [e], 1, "ans:" + e.id); this.myAnswers[formId].sent = true; this.myAnswers[formId].nextAt = this.retryNextAt(0); this.saveMeta(); }
     return { ok: true, eventId: e.id };
   }
   importForm(input) {
@@ -1360,11 +1449,12 @@ export class WhisperboxClient {
     const f = st.forms[formId]; if (!f) return list;
     const quiz = this.quizOf(f, keys);
     const replies = new Map();
-    for (const r of f.replies || []) replies.set(r.to, (replies.get(r.to) || 0) + 1);   // by receipt id (older) or tag (ADR 0026)
+    for (const r of f.replies || []) replies.set(r.to, (replies.get(r.to) || 0) + 1);   // by receipt id (older) or tag (ADR 0027)
     for (const r of list) {
       const cid = confirmIdOf(r, formId);
       r.confirmed = (f.confirmations || []).includes(cid);
-      r.replies = cid ? (replies.get(cid) || 0) + (replies.get(replyTag(formId, cid)) || 0) : 0;
+      const v = cid && r.replyPub ? this.answerSecret(st, formId, cid, r.replyPub) : null;
+      r.replies = cid ? (replies.get(cid) || 0) + (v ? replies.get(v.rtag) || 0 : 0) : 0;
       if (quiz) Object.assign(r, scoreAnswers(f.questions, quiz, r.answers));
     }
     return list;
@@ -1373,8 +1463,10 @@ export class WhisperboxClient {
   sendReply(formId, cid, replyPub, body) {
     let sealed;
     try { sealed = C.toHex(C.sealToCreator(null, replyPub, JSON.stringify(body))); } catch { return false; }
-    // addressed by a tag, not the answer's receipt id (ADR 0026): only the respondent can recognise it
-    const to = replyTag(formId, cid);
+    // addressed by a tag from the answer's secret (ADR 0027): only the respondent can recognise it
+    const v = this.answerSecret(this.state(), formId, cid, String(replyPub).toLowerCase());
+    if (!v) return false;
+    const to = v.rtag;
     return this.adopt(this.buildEvent(EventType.RESPONSE_REPLY, responseReplyId(formId, to, C.randomHex(6)), { formId, author: this.identity.address, to, sealed }, true));
   }
   /** Private reply to one answer (creator / co-owner): only that respondent can read it. */
@@ -1418,7 +1510,8 @@ export class WhisperboxClient {
   myRepliesFor(fid, f) {
     const cids = new Set(this.myCidsFor(fid));
     if (!cids.size || !(f.replies || []).length) return null;
-    const byTo = new Map(); for (const c of cids) { byTo.set(c, c); byTo.set(replyTag(fid, c), c); }   // older replies name the receipt id
+    const st0 = { forms: { [fid]: f } };   // older replies name the receipt id, newer a tag from the answer's secret (ADR 0027)
+    const byTo = new Map(); for (const c of cids) { byTo.set(c, c); const v = this.answerSecret(st0, fid, c, null); if (v) byTo.set(v.rtag, c); }
     this._replies = this._replies || new Map();
     const rks = new Map(); const out = [];
     for (const r of f.replies) {

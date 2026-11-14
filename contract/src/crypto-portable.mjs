@@ -219,3 +219,44 @@ export function eciesOpen(creatorIdentity, sealed) {
     throw new Error("aead tag verification failed");
   }
 }
+
+// ── Receipts v3 (ADR 0027): a per-answer secret only the respondent and the form's owners hold ──
+//   S        = ecdhX(replyPriv, formPub) = ecdhX(formPriv, replyPub)          (32 bytes)
+//   tag      = hex(sha256("wb-receipt-v3|" || S))     reply tag: "wb-reply-v3|"
+//   proof    = hex(nonce12 || ChaCha20-Poly1305(K, nonce, pt, aad = utf8(tag)))
+//              K  = HKDF-SHA256(S, salt "wb-receipt-v3-key", info "", 32)
+//              pt = {"at":<ms>,"pub":"<signer pub33 hex>","sig":"<r||s hex>"}
+//              sig = ECDSA low-S over sha256("wb-receipt-v3-sig|" + lc(formId) + "|" + cid + "|" + at)
+// The creator or a co-owner signs; nobody else can make a valid proof, and the time the edit lock
+// uses is the signed `at`, not the (unsigned, coarse) event HLC.
+const RCPT_TAG = utf8ToBytes("wb-receipt-v3|"), REPLY_TAG = utf8ToBytes("wb-reply-v3|");
+export const receiptSecret = (priv32, pub33) => ecdhX(priv32, pub33);
+export const receiptTagOf = (S) => bytesToHex(sha256(concatBytes(RCPT_TAG, bytes(S))));
+export const replyTagOf = (S) => bytesToHex(sha256(concatBytes(REPLY_TAG, bytes(S))));
+const receiptKey = (S) => hkdf(sha256, bytes(S), utf8ToBytes("wb-receipt-v3-key"), new Uint8Array(0), 32);
+const receiptSigDigest = (formId, cid, at) => sha256(utf8ToBytes("wb-receipt-v3-sig|" + String(formId).toLowerCase() + "|" + String(cid) + "|" + String(at)));
+/** The sealed proof for one answer's receipt, by `signer` (creator or co-owner identity). */
+export function sealReceiptProof(S, signer, formId, cid, at, opts = {}) {
+  const sig = bytesToHex(signDigest(signer, receiptSigDigest(formId, cid, at)));
+  const pt = utf8ToBytes(JSON.stringify({ at, pub: signer.pubHex, sig }));
+  const nonce = opts.nonce ? bytes(opts.nonce) : randomBytes(12);
+  const tag = receiptTagOf(S);
+  return bytesToHex(concatBytes(nonce, chacha20poly1305(receiptKey(S), nonce, utf8ToBytes(tag)).encrypt(pt)));
+}
+/** Open + verify a proof: {at, by} (the signer's address) or null. Who may sign is the caller's check. */
+export function openReceiptProof(S, formId, cid, proofHex) {
+  try {
+    const b = fromHex(proofHex);
+    if (b.length < 12 + 16 + 2 || b.length > 1024) return null;
+    const tag = receiptTagOf(S);
+    const pt = chacha20poly1305(receiptKey(S), b.slice(0, 12), utf8ToBytes(tag)).decrypt(b.slice(12));
+    const o = JSON.parse(utf8Decode(pt));
+    if (!o || typeof o !== "object" || !Number.isSafeInteger(o.at) || o.at < 0 || typeof o.pub !== "string" || typeof o.sig !== "string") return null;
+    if (!verifyDigest(o.pub, receiptSigDigest(formId, cid, o.at), o.sig)) return null;
+    return { at: o.at, by: "0x" + bytesToHex(sha256(fromHex(o.pub))).slice(24) };
+  } catch { return null; }
+}
+/** A decoy receipt entry: indistinguishable from a real one to anyone without its secret. */
+// A real proof is 12 + 232 + 16 = 260 bytes while `at` has 13 digits (2001..2286), so a decoy is too.
+export const RECEIPT_PROOF_BYTES = 260;
+export const decoyReceiptEntry = () => ({ t: bytesToHex(randomBytes(32)), s: bytesToHex(randomBytes(RECEIPT_PROOF_BYTES)) });

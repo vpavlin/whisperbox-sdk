@@ -12,13 +12,13 @@ const signed = (id, ev) => ({ ...ev, ...C.signEvent(id, ev) });
 const keyOf = (s) => C.identityFromPriv(C.toHex(C.utf8Encode(s.padEnd(32, "z"))).slice(0, 64));
 async function client() { const c = new WhisperboxClient({ store: mem(), msgsPerEpoch: 1e6, send: async () => {} }); await c.init(); c.onConnected(); return c; }
 
-test("R4-1: an invitation for a form whose creator isn't known is neither shown nor acceptable, and pins no one", async () => {
+test("R4-1/R6-5: an invitation without the creator's link is only listed, not acceptable, and pins no one", async () => {
   const r = await client();
   const x = keyOf("stranger"), fid = "form-b0b0b0b0";
   r.ingest([frame(signed(x, { v: 1, id: `coowner:${fid}:${r.identity.address}`, type: "form.coowner", hlc: { wall: Date.now(), ctr: 0, dev: "x" }, dev: "x",
     payload: { formId: fid, author: x.address, owner: r.identity.address, sealedKey: "00" } }))]);
-  assert.ok(!r.snapshot().coInvites.some((i) => i.formId === fid), "not shown before its form arrives (R5-1)");
-  assert.ok(!r.acceptCoOwner(fid).ok, "...nor acceptable (R5-1)");
+  assert.ok(r.snapshot().coInvites.find((i) => i.formId === fid)?.needsLink, "listed as needing the creator's link (R6-5)");
+  assert.ok(!r.acceptCoOwner(fid).ok, "...and not acceptable without it (R5-1, R6-5)");
   assert.ok(!r.pins[fid], "nothing pinned");
 });
 

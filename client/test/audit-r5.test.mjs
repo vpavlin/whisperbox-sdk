@@ -15,18 +15,21 @@ const evOf = (c, type, fid) => c.log.find((e) => e.type === type && (e.payload?.
 const grant = (who, fid, owner, wall) => signed(who, { v: 1, id: `coowner:${fid}:${owner}:${who.address.slice(2, 8)}`, type: "form.coowner",
   hlc: { wall, ctr: 0, dev: "x" }, dev: "x", payload: { formId: fid, author: who.address, owner, sealedKey: "00" } });
 
-test("R5-2: a stranger's grant neither hides nor blocks the creator's invitation", async () => {
+test("R5-2/R6-5: a stranger's grant neither hides nor blocks the creator's invitation; the link decides", async () => {
   const p = await client(), r = await client();
   const fid = p.createForm(q).formId;
   assert.ok(p.addCoOwner(fid, r.identity.pubHex).ok);
   r.ingest([frame(evOf(p, "form.coowner", fid))]); r.ingest([frame(evOf(p, "form.publish", fid))]);
-  assert.strictEqual(r.snapshot().coInvites.find((i) => i.formId === fid)?.from, p.identity.address, "P's invitation is shown");
+  assert.ok(r.snapshot().coInvites.find((i) => i.formId === fid)?.needsLink, "without the link: listed, needs it");
+  assert.ok(!r.acceptCoOwner(fid).ok);
+  r.importForm(`whisperbox://form?id=${fid}&by=${p.identity.address}`);
+  assert.strictEqual(r.snapshot().coInvites.find((i) => i.formId === fid)?.from, p.identity.address, "with it: P's invitation");
   r.ingest([frame(grant(keyOf("stranger"), fid, r.identity.address, Date.now() + 1))]);
-  assert.ok(r.snapshot().coInvites.some((i) => i.formId === fid), "still shown after a stranger's grant");
+  assert.ok(r.snapshot().coInvites.some((i) => i.formId === fid && i.from === p.identity.address), "still shown after a stranger's grant");
   assert.ok(r.acceptCoOwner(fid).ok, "...and acceptable");
 });
 
-test("R5-1: a stranger's backdated copy makes the invitation contested; accepting needs the creator's link", async () => {
+test("R5-1/R6-5: a stranger's backdated copy can't be accepted; with the creator's link the real form is", async () => {
   const p = await client(), r = await client(), x = keyOf("attacker");
   const fid = p.createForm(q).formId;
   assert.ok(p.addCoOwner(fid, r.identity.pubHex).ok);
@@ -34,10 +37,9 @@ test("R5-1: a stranger's backdated copy makes the invitation contested; acceptin
   const fake = signed(x, { ...real, hlc: { ...real.hlc, wall: real.hlc.wall - 60_000 }, payload: { ...real.payload, creator: x.address, title: "FAKE" } });
   r.ingest([frame(grant(x, fid, r.identity.address, Date.now()))]); r.ingest([frame(evOf(p, "form.coowner", fid))]);
   r.ingest([frame(fake)]); r.ingest([frame(real)]);
-  const inv = r.snapshot().coInvites.find((i) => i.formId === fid);
-  assert.ok(inv && inv.contested, "shown as contested");
-  assert.ok(!r.acceptCoOwner(fid).ok, "can't be accepted without a link");
-  r.importForm(`whisperbox://form?id=${fid}&by=${p.address ?? p.identity.address}`);
+  assert.ok(!r.acceptCoOwner(fid).ok, "no link: neither the fake nor the real invitation can be accepted");
+  r.importForm(`whisperbox://form?id=${fid}&by=${p.identity.address}`);
+  r.ingest([frame(fake)]); r.ingest([frame(real)]);   // what the pull after opening the link brings
   assert.ok(r.acceptCoOwner(fid).ok, "with the creator's link it can");
   assert.strictEqual(r.state().forms[fid].creator, p.identity.address, "and the form shown is the creator's");
 });

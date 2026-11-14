@@ -45,7 +45,7 @@ test("an answer the creator missed goes out again until the receipt, then stops"
   assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "late" }]).ok); pump();
   assert.strictEqual((a.decrypt(a.state()).responses[fid] || []).length, 0, "the creator missed it");
   a.offline = false;
-  advance(11 * 60000);   // the 10-minute retry
+  advance(14 * 60000);   // the 10-minute retry (+/-30%, ADR 0028)
   assert.strictEqual(a.decrypt(a.state()).responses[fid].length, 1, "the retry delivered it");
   assert.ok(a.confirmAll(fid).ok); pump();
   assert.ok(b.snapshot().state.forms[fid].myConfirmed, "the respondent has its receipt");
@@ -130,7 +130,7 @@ test("receipts go out alone and small; the form state carries none; a lost recei
   assert.ok(rcpt.length >= 1 && evs.filter((e) => e.type === "form.publish").length === 0, "receipt frames carry receipts only, never the form again");
   // blinded (ADR 0026): no form id, no author, no signature, not the creator's device id
   const rs0 = rcpt.flatMap((f) => f.events);
-  assert.ok(rs0.every((e) => !e.pub && !e.sig && Object.keys(e.payload).join() === "tags" && e.dev !== a.deviceId && e.hlc.dev === e.dev), "receipts name no form, author or device");
+  assert.ok(rs0.every((e) => !e.pub && !e.sig && Object.keys(e.payload).join() === "r" && e.dev !== a.deviceId && e.hlc.dev === e.dev), "receipts name no form, author or device");
   // the hourly state: the form, no receipts
   frames.length = 0; a.publishFormState(fid, 5); a.drain();
   const st = frames.slice();
@@ -142,6 +142,6 @@ test("receipts go out alone and small; the form state carries none; a lost recei
   r0.log = r0.log.filter((e) => e.type !== "response.receipt"); r0.recountLog(); r0._int = null; r0._rint = null;   // as if the receipt never came
   r0.myAnswers[fid].sent = true; r0.myAnswers[fid].retries = 0;
   assert.ok(held > 0 && !r0.snapshot().state.forms[fid].myConfirmed, "r0 lost its receipt");
-  advance(11 * 60000);
+  advance(14 * 60000);   // the 10-minute retry (+/-30%, ADR 0028)
   assert.ok(r0.snapshot().state.forms[fid].myConfirmed, "the retried answer brought the receipt back");
 });

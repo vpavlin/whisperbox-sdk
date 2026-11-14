@@ -39,9 +39,8 @@ export const EventType = Object.freeze({
   FORM_UPDATE: "form.update",   // 0.3.6+: creator edits a published form (latest wins)
   FORM_COOWNER: "form.coowner", // 0.3.8+: creator shares the form's key with a co-owner
   RESPONSE_REPLY: "response.reply", // 0.3.9+: private reply to one answer (sealed to its reply key)
-  // 1.1.3+ (ADR 0026): a BLINDED receipt - unsigned, no form id, no author; only tags
-  // sha256("wb-receipt-v2|" + formId + "|" + confirmationId). Only the respondent and the form's
-  // owners know the (sealed) confirmation id, so only they can make or recognise a tag.
+  // 1.1.3+ (ADR 0026/0027): a BLINDED receipt - unsigned, no form id, no author; only entries
+  // {t: tag, s: sealed signed proof} that only the respondent and the form's owners can open.
   RESPONSE_RECEIPT: "response.receipt",
 });
 
@@ -205,24 +204,12 @@ export function evResponseReply({ hlc, dev, formId, author, to, sealed, nonce })
   };
 }
 
-// ── Blinded receipts and reply addresses (ADR 0026) ─────────────────────────────
-/** Tags in one response.receipt event, at most. */
-export const MAX_RECEIPT_TAGS = 100;
-const tagMemo = new Map();
-const tagOf = (kind, formId, cid) => {
-  const k = kind + "|" + lc(formId) + "|" + cid;
-  let t = tagMemo.get(k);
-  if (t === undefined) {
-    t = bytesToHex(sha256(utf8ToBytes(k)));
-    if (tagMemo.size >= 50000) tagMemo.clear();
-    tagMemo.set(k, t);
-  }
-  return t;
-};
-/** The public tag of a receipt for one answer: nobody without the sealed confirmation id can link it. */
-export const receiptTag = (formId, confirmationId) => tagOf("wb-receipt-v2", formId, confirmationId);
-/** The public address of a reply to one answer (response.reply payload.to). */
-export const replyTag = (formId, confirmationId) => tagOf("wb-reply-v2", formId, confirmationId);
-/** A receipt event's id: content-addressed by its (sorted) tags. */
-export const responseReceiptId = (tags) => `rcpt:${bytesToHex(sha256(utf8ToBytes([...tags].sort().join(","))))}`;
+// ── Blinded receipts (ADR 0026, format v3: ADR 0027) ────────────────────────────
+// payload {r: [{t, s}]}: t = a tag only the respondent and the form's owners can compute
+// (crypto-portable receiptTagOf), s = the sealed, signed proof (sealReceiptProof). Decoys pad the list.
+/** Entries in one response.receipt event, at most (each ~600 bytes on the wire). */
+export const MAX_RECEIPT_TAGS = 64;
+/** A receipt event's id: content-addressed by its (sorted) entries. */
+export const responseReceiptId = (entries) => `rcpt:${bytesToHex(sha256(utf8ToBytes(entries.map((x) => x.t + "." + x.s).sort().join(","))))}`;
 export const isReceiptTag = (t) => typeof t === "string" && /^[0-9a-f]{64}$/.test(t);
+export const isReceiptProof = (s) => typeof s === "string" && s.length >= 60 && s.length <= 2048 && s.length % 2 === 0 && /^[0-9a-f]*$/.test(s);

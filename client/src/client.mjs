@@ -1025,7 +1025,7 @@ export class WhisperboxClient {
     const at = this.now(), topic = wireTopicFor(formId);
     const box = this.rcptOutbox[topic] || (this.rcptOutbox[topic] = { due: at + this.receiptDelay(), items: [] });
     for (const { c, v } of blind) if (!box.items.some((x) => x.t === v.tag)) box.items.push({ formId, cid: c, at, t: v.tag, s: C.sealReceiptProof(v.S, this.identity, formId, c, at) });
-    this.saveOutbox();
+    this.store.set("wb-rcpt-outbox", JSON.stringify(this.rcptOutbox)).catch?.(() => {});   // at once (audit R9-2)
     if (box.due <= at) this.flushReceipts(topic);
     return n + 1;
   }
@@ -1422,6 +1422,8 @@ export class WhisperboxClient {
   forgetForm(formId) {
     // off this device: the link it was opened from (pin), hidden or not (FR-13, as the core's deleteLocalForm)
     formId = lc(formId); this.watched.delete(formId); delete this.pins[formId]; this.hidden.delete(formId); this.saveMeta();
+    // forgetting a form I co-own leaves it too: its receipts waiting to go out are dropped (audit R9-1)
+    if (this.coAccepted.delete(formId)) { this.coDeclined.add(formId); this.saveCoOwners(); this._int = null; this._opened = null; }
     this.pruneUnwanted(); this.dropUnusedBuckets();   // its events go too, unless I created, co-own or answered it (audit W2-9)
     this.emit();
     return { ok: true };

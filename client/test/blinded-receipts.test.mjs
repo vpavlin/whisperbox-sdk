@@ -192,3 +192,16 @@ test("R8-1: a co-owner who leaves never sends the receipts waiting in its outbox
   wire.length = 0; c.tick();
   assert.strictEqual(sentBy(wire, c).filter((e) => e.type === "response.receipt").length, 0);
 });
+
+test("R9-1/R9-2: forgetting a co-owned form leaves it (outbox purged); a confirmation is saved at once", async () => {
+  const { pump, a, fid, peers: [, , c] } = await answered(3);
+  assert.ok(a.addCoOwner(fid, c.identity.pubHex).ok); pump();
+  assert.ok(c.acceptCoOwner(fid).ok); pump();
+  c.ingest([frameOf(a.log.filter((e) => e.type === "response.submit"))]);
+  c.snapshot(); c.receiptDelayMs = 60000;
+  assert.ok(c.confirmAll(fid).ok);
+  const saved = JSON.parse(await c.store.get("wb-rcpt-outbox"));
+  assert.strictEqual(Object.values(saved).flatMap((b) => b.items).length, 1, "on disk at once");
+  assert.ok(c.forgetForm(fid).ok);
+  assert.ok(!c.coAccepted.has(fid) && Object.keys(c.rcptOutbox).length === 0, "left and purged");
+});

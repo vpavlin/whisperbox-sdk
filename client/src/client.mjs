@@ -760,13 +760,13 @@ export class WhisperboxClient {
     // from strangers' until the key is restored, so none is dropped meanwhile
     const keyMissing = Object.values(st.forms).some((f) => f.creator === who && f.publicKey && !keys.has(f.publicKey));
     const creator = {}, coOwners = {}, keyForm = {}, alts = {};
-    const contested = new Set();
+    const contested = new Set(), showCount = new Set();
     for (const f of Object.values(st.forms)) {
-      creator[f.id] = lc(f.creator || ""); if (f.contested) contested.add(f.id); coOwners[f.id] = new Set((f.coOwners || []).map((c) => lc(c.address || "")));
+      creator[f.id] = lc(f.creator || ""); if (f.contested) contested.add(f.id); if (f.showResponseCount) showCount.add(f.id); coOwners[f.id] = new Set((f.coOwners || []).map((c) => lc(c.address || "")));
       if (f.publicKey) keyForm[f.publicKey] = f.id;
     }
     for (const e of this.log) if (e.type === EventType.FORM_PUBLISH) { const f = formIdOfEvent(e); alts[f] = (alts[f] || 0) + 1; }
-    this._int = { n: this.log.length, who, mine, keys, keyMissing, nCard: this.cardKeys?.size || 0, creator, coOwners, keyForm, alts, contested };
+    this._int = { n: this.log.length, who, mine, keys, keyMissing, nCard: this.cardKeys?.size || 0, creator, coOwners, keyForm, alts, contested, showCount };
     return this._int;
   }
   wanted(e) {
@@ -891,7 +891,8 @@ export class WhisperboxClient {
     return out;
   }
   // a form that shows respondents the answer count counts PUBLIC receipts: there they stay named (ADR 0026)
-  namedReceipts(formId) { return !!computeState(this.log, { identity: this.identity?.address, prefer: this.pins }).forms[formId]?.showResponseCount; }
+  // (from the cached interest view: resendReceiptFor runs per duplicate answer, a fold each was a DoS)
+  namedReceipts(formId) { return this.interest().showCount.has(formId); }
   // a blinded receipt is kept only if one of its tags is for an answer I can name (ADR 0026)
   receiptWanted(e) {
     const who = this.identity?.address;

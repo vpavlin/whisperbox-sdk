@@ -20,7 +20,7 @@
 //  - All address comparisons are case-insensitive (lowercased).
 //  - No Math.random, no Date.now, no iteration over unordered structures.
 
-import { EventType } from "../../contract/src/events.mjs";
+import { EventType, receiptTag, isReceiptTag } from "../../contract/src/events.mjs";
 import { compareHlc } from "../../contract/src/hlc.mjs";
 
 const lc = (s) => String(s).toLowerCase();
@@ -83,6 +83,7 @@ export function computeState(mergedLog, opts = {}) {
   const closeHlcBy = {}; // "formId|creator" → close hlc (per contender)
   const spansBy = {}; // "formId|creator" -> [{from, to|null}] closed periods (close..reopen)
   const receiptHlcBy = {}; // "formId|creator" -> {confirmationId: hlc of the first receipt} (answer-edit lock)
+  const receiptTags = {}; // blinded receipts (ADR 0026): tag -> hlc of the first receipt carrying it
 
   const forms = {}; // formId → FormView (inserted in HLC publish order)
   const formHlc = new Map(); // formId → publish event hlc (feed ordering)
@@ -136,6 +137,13 @@ export function computeState(mergedLog, opts = {}) {
         // OPAQUE sealed blob. No form routing, no admission checks at log level —
         // interpretation happens in creatorView after decryption. Never dropped.
         responses.push({ id: e.id, hlc: e.hlc, encryptedPayload: p.encryptedPayload });
+        return;
+      }
+      case EventType.RESPONSE_RECEIPT: {
+        // blinded (ADR 0026): no form, no author - only who knows an answer's confirmation id can tell
+        // which answer a tag is for (resolveReceipts, creatorView). The log is HLC-ordered: first wins.
+        if (!Array.isArray(p.tags)) { drop(dropped, "bad-receipt"); return; }
+        for (const t of p.tags) if (isReceiptTag(t) && !(t in receiptTags)) receiptTags[t] = e.hlc;
         return;
       }
       case EventType.RESPONSE_CONFIRM:
@@ -247,6 +255,7 @@ export function computeState(mergedLog, opts = {}) {
     pending: { count: deferred.length, events: deferred.map((e) => ({ id: e.id, type: e.type })) },
     dropped,
   };
+  if (Object.keys(receiptTags).length) state.receiptTags = receiptTags;   // only when any (older vectors stay byte-identical)
 
   if (identity) {
     const mine = Object.values(forms).filter((f) => f.creator === identity);
@@ -447,7 +456,7 @@ export function creatorView(state, opts) {
       // the window after their first answer, and before the creator's receipt for it.
       if (!f.allowEdits || !prev.entry) { drop(view.dropped, "duplicate-respondent"); continue; }
       if (w.wall - prev.firstWall > (f.editWindowMinutes || 15) * 60000) { drop(view.dropped, "edit-too-late"); continue; }
-      const rh = state.receiptHlc?.[formId]?.[prev.cid];
+      const rh = state.receiptHlc?.[formId]?.[prev.cid] || (prev.cid && state.receiptTags ? state.receiptTags[receiptTag(formId, prev.cid)] : undefined);
       if (rh && atOrAfter(w, blob, rh)) { drop(view.dropped, "edit-after-receipt"); continue; }
       Object.assign(prev.entry, { submittedAt: dec.submittedAt ?? null, answers: sanitizeAnswers(dec.answers), signature: dec.signature ?? null, edits: prev.entry.edits + 1 });
       if (typeof dec.replyPub === "string" && /^0[23][0-9a-fA-F]{64}$/.test(dec.replyPub)) prev.entry.replyPub = dec.replyPub.toLowerCase();
@@ -479,7 +488,39 @@ export function creatorView(state, opts) {
     counted.set(formId, (counted.get(formId) || 0) + 1);
   }
 
+  // blinded receipts (ADR 0026): an answer whose tag is in the log is confirmed, as by a named receipt
+  if (state.receiptTags) for (const formId of view.forms) {
+    let list = null;
+    for (const r of view.responses[formId]) {
+      const cid = r.confirmationId;
+      if (!cid || !state.receiptTags[receiptTag(formId, cid)]) continue;
+      list = list || [...(view.confirmations[formId] || [])];
+      if (!list.includes(cid)) list.push(cid);
+    }
+    if (list) view.confirmations[formId] = list;
+  }
   return view;
+}
+
+/**
+ * Blinded receipts (ADR 0026), resolved for the answers THIS device can name: pairs [formId,
+ * confirmationId] it knows (its own answers; the answers it decrypted). A matching tag confirms the
+ * answer exactly as a named receipt did: the id joins form.confirmations, its hlc receiptHlc (the edit
+ * lock). Mutates and returns state. Per device, like creatorView.
+ */
+export function resolveReceipts(state, pairs) {
+  const tags = state.receiptTags;
+  if (!tags) return state;
+  for (const [formId0, cid] of pairs || []) {
+    const formId = String(formId0 || "").toLowerCase(), f = state.forms[formId];
+    if (!f || typeof cid !== "string" || !cid) continue;
+    const h = tags[receiptTag(formId, cid)];
+    if (!h) continue;
+    if (!f.confirmations.includes(cid)) f.confirmations.push(cid);
+    const rh = state.receiptHlc[formId] || (state.receiptHlc[formId] = {});
+    if (!(cid in rh)) rh[cid] = h;
+  }
+  return state;
 }
 
 /** Convenience alias for the snapshot() hot path (core module API name). */

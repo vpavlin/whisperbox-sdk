@@ -12,28 +12,22 @@ const signed = (id, ev) => ({ ...ev, ...C.signEvent(id, ev) });
 const keyOf = (s) => C.identityFromPriv(C.toHex(C.utf8Encode(s.padEnd(32, "z"))).slice(0, 64));
 async function client() { const c = new WhisperboxClient({ store: mem(), msgsPerEpoch: 1e6, send: async () => {} }); await c.init(); c.onConnected(); return c; }
 
-test("R4-1: accepting an invitation for a form whose creator isn't known pins no one; a stranger can't become its creator", async () => {
+test("R4-1: an invitation for a form whose creator isn't known is neither shown nor acceptable, and pins no one", async () => {
   const r = await client();
   const x = keyOf("stranger"), fid = "form-b0b0b0b0";
   r.ingest([frame(signed(x, { v: 1, id: `coowner:${fid}:${r.identity.address}`, type: "form.coowner", hlc: { wall: Date.now(), ctr: 0, dev: "x" }, dev: "x",
     payload: { formId: fid, author: x.address, owner: r.identity.address, sealedKey: "00" } }))]);
-  assert.ok(r.snapshot().coInvites.some((i) => i.formId === fid), "a pending invitation (creator unknown)");
-  assert.ok(r.acceptCoOwner(fid).ok);
-  assert.ok(!r.pins[fid], "accepting pinned no one");
-  const y = keyOf("second");
-  r.ingest([frame(signed(y, { v: 1, id: `coowner:${fid}:${r.identity.address}`, type: "form.coowner", hlc: { wall: Date.now() + 1, ctr: 0, dev: "y" }, dev: "y",
-    payload: { formId: fid, author: y.address, owner: r.identity.address, sealedKey: "00" } }))]);
-  assert.ok(r.inviterOf(fid).conflict, "a second inviter makes it ambiguous");
-  r.leaveCoOwner(fid);
-  assert.ok(!r.acceptCoOwner(fid).ok, "...and an ambiguous invitation can't be accepted");
+  assert.ok(!r.snapshot().coInvites.some((i) => i.formId === fid), "not shown before its form arrives (R5-1)");
+  assert.ok(!r.acceptCoOwner(fid).ok, "...nor acceptable (R5-1)");
+  assert.ok(!r.pins[fid], "nothing pinned");
 });
 
 test("R4-3: a live copy never re-dates an answer a Store already dated", async () => {
   const a = await client();
   const fid = a.createForm(q).formId, pub = a.state().forms[fid].publicKey;
   const hex = C.toHex(C.sealToCreator(null, pub, JSON.stringify({ formId: fid })));
-  const ev = { v: 1, id: responseSubmitId(hex), type: "response.submit", hlc: { wall: Date.now(), ctr: 0, dev: "x" }, dev: "x", payload: { encryptedPayload: hex } };
   const t = Date.now();
+  const ev = { v: 1, id: responseSubmitId(hex), type: "response.submit", hlc: { wall: t - 3_600_000, ctr: 0, dev: "x" }, dev: "x", payload: { encryptedPayload: hex } };
   a.ingest([frame(ev)], { tsMs: t - 3_600_000, source: "history" });
   a.ingest([frame(ev)], { tsMs: t + 240_000 });   // a live replay, 64 min later
   assert.strictEqual(a.netTimes[ev.id], t - 3_600_000);

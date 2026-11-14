@@ -126,17 +126,20 @@ test("receipts go out alone and small; the form state carries none; a lost recei
   for (const r of rs) { assert.ok(r.submitResponse(fid, [{ questionId: "q1", value: "hi" }]).ok); pump(); advance(5000); }
   for (const r of rs) assert.ok(r.snapshot().state.forms[fid].myConfirmed, "every respondent has its receipt");
   const evs = frames.flatMap((f) => (f.type === "EVENTS" ? f.events : []));
-  const rcpt = frames.filter((f) => f.type === "EVENTS" && f.events.every((e) => e.type === "response.confirm"));
+  const rcpt = frames.filter((f) => f.type === "EVENTS" && f.events.every((e) => e.type === "response.receipt"));
   assert.ok(rcpt.length >= 1 && evs.filter((e) => e.type === "form.publish").length === 0, "receipt frames carry receipts only, never the form again");
+  // blinded (ADR 0026): no form id, no author, no signature, not the creator's device id
+  const rs0 = rcpt.flatMap((f) => f.events);
+  assert.ok(rs0.every((e) => !e.pub && !e.sig && Object.keys(e.payload).join() === "tags" && e.dev !== a.deviceId && e.hlc.dev === e.dev), "receipts name no form, author or device");
   // the hourly state: the form, no receipts
   frames.length = 0; a.publishFormState(fid, 5); a.drain();
   const st = frames.slice();
-  assert.ok(st.length && st.every((f) => f.events.every((e) => e.type !== "response.confirm")), "the form's state carries no receipts");
+  assert.ok(st.length && st.every((f) => f.events.every((e) => e.type !== "response.receipt")), "the form's state carries no receipts");
   wire.length = 0;
   // a receipt that never arrived: the respondent retries its answer, the creator sends that receipt again
   const r0 = rs[0];
-  const held = r0.log.filter((e) => e.type === "response.confirm").length;
-  r0.log = r0.log.filter((e) => e.type !== "response.confirm"); r0.recountLog(); r0._int = null;   // as if the receipt never came
+  const held = r0.log.filter((e) => e.type === "response.receipt").length;
+  r0.log = r0.log.filter((e) => e.type !== "response.receipt"); r0.recountLog(); r0._int = null; r0._rint = null;   // as if the receipt never came
   r0.myAnswers[fid].sent = true; r0.myAnswers[fid].retries = 0;
   assert.ok(held > 0 && !r0.snapshot().state.forms[fid].myConfirmed, "r0 lost its receipt");
   advance(11 * 60000);

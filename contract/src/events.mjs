@@ -39,6 +39,10 @@ export const EventType = Object.freeze({
   FORM_UPDATE: "form.update",   // 0.3.6+: creator edits a published form (latest wins)
   FORM_COOWNER: "form.coowner", // 0.3.8+: creator shares the form's key with a co-owner
   RESPONSE_REPLY: "response.reply", // 0.3.9+: private reply to one answer (sealed to its reply key)
+  // 1.1.3+ (ADR 0026): a BLINDED receipt - unsigned, no form id, no author; only tags
+  // sha256("wb-receipt-v2|" + formId + "|" + confirmationId). Only the respondent and the form's
+  // owners know the (sealed) confirmation id, so only they can make or recognise a tag.
+  RESPONSE_RECEIPT: "response.receipt",
 });
 
 // Events only the form's creator may author (gated). Gating: payload.author ==
@@ -53,7 +57,7 @@ export const CREATOR_GATED = new Set([
 ]);
 
 // Open events: any participant may author; no event-level signature allowed.
-export const OPEN_EVENTS = new Set([EventType.RESPONSE_SUBMIT]);
+export const OPEN_EVENTS = new Set([EventType.RESPONSE_SUBMIT, EventType.RESPONSE_RECEIPT]);
 
 const lc = (s) => String(s).toLowerCase();
 
@@ -200,3 +204,25 @@ export function evResponseReply({ hlc, dev, formId, author, to, sealed, nonce })
     payload: { formId: lc(formId), author: lc(author), to, sealed },
   };
 }
+
+// ── Blinded receipts and reply addresses (ADR 0026) ─────────────────────────────
+/** Tags in one response.receipt event, at most. */
+export const MAX_RECEIPT_TAGS = 100;
+const tagMemo = new Map();
+const tagOf = (kind, formId, cid) => {
+  const k = kind + "|" + lc(formId) + "|" + cid;
+  let t = tagMemo.get(k);
+  if (t === undefined) {
+    t = bytesToHex(sha256(utf8ToBytes(k)));
+    if (tagMemo.size >= 50000) tagMemo.clear();
+    tagMemo.set(k, t);
+  }
+  return t;
+};
+/** The public tag of a receipt for one answer: nobody without the sealed confirmation id can link it. */
+export const receiptTag = (formId, confirmationId) => tagOf("wb-receipt-v2", formId, confirmationId);
+/** The public address of a reply to one answer (response.reply payload.to). */
+export const replyTag = (formId, confirmationId) => tagOf("wb-reply-v2", formId, confirmationId);
+/** A receipt event's id: content-addressed by its (sorted) tags. */
+export const responseReceiptId = (tags) => `rcpt:${bytesToHex(sha256(utf8ToBytes([...tags].sort().join(","))))}`;
+export const isReceiptTag = (t) => typeof t === "string" && /^[0-9a-f]{64}$/.test(t);

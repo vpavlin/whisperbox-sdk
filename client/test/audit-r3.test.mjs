@@ -12,7 +12,7 @@ const q = { title: "r3", questions: [{ id: "q1", type: "textarea", text: "?", re
 async function net(n) {
   const peers = [], wire = [];
   for (let i = 0; i < n; i++) {
-    const p = new WhisperboxClient({ store: mem(), msgsPerEpoch: 1e6, send: async (b) => { wire.push({ from: p, bytes: b }); } });
+    const p = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), msgsPerEpoch: 1e6, send: async (b) => { wire.push({ from: p, bytes: b }); } });
     await p.init(); p.onConnected(); peers.push(p);
   }
   const pump = () => { while (wire.length) { const m = wire.shift(); for (const o of peers) if (o !== m.from) o.ingest([m.bytes]); } };

@@ -18,7 +18,8 @@ function candidates(b64) {
 
 class Bridge {
   constructor(layers) {
-    this.p = spawn(BRIDGE, [], { stdio: ["pipe", "pipe", "ignore"] });
+    // the desktop re-publishes its forms every ~2 s here (hourly in production): there is no ASK (ADR 0028)
+    this.p = spawn(BRIDGE, [], { stdio: ["pipe", "pipe", "ignore"], env: { ...process.env, WHISPERBOX_REPUBLISH_MS: "2000" } });
     this.waiters = new Map(); this.nextId = 1; this.clients = []; this.layers = layers;
     createInterface({ input: this.p.stdout }).on("line", (l) => {
       let j; try { j = JSON.parse(l); } catch { return; }
@@ -32,7 +33,7 @@ class Bridge {
   pump(ms) { return new Promise((r) => { this.pumpDone = r; this.send({ pump: ms }); }); }
   async client() {
     // the JS phones share one bus node in the bridge: hand each phone's frames to the others too
-    const c = new WhisperboxClient({ store: memStore(), msgsPerEpoch: 1e6, send: async (bytes, topic) => {
+    const c = new WhisperboxClient({ receiptDelayMs: 0, store: memStore(), msgsPerEpoch: 1e6, send: async (bytes, topic) => {
       this.send({ tx: Buffer.from(bytes).toString("base64"), layers: this.layers, topic });
       for (const o of this.clients) if (o !== c) o.ingest([bytes]);
     } });
@@ -105,13 +106,14 @@ for (const layers of [1, 0]) {
       assert.ok(phone.closeForm(fP).ok);
       assert.ok(await until(b, async () => (await b.call("snapshot")).state.forms[fP].status === "closed"), "desktop sees the phone's close");
 
-      // 5. wire v2 (ADR 0024): a brand-new phone opens two links; each form's creator (the desktop for
-      //    fA, the first phone for fP) answers its ASK with the form's state - nobody else serves anything
+      // 5. a brand-new phone opens two links; each form's creator (the desktop for fA, the first phone
+      //    for fP) re-publishes on its schedule - no ASK any more (ADR 0028), nobody else serves anything
       const fresh = await b.client();
-      fresh.minute = 600;   // ASK after 0.2 s instead of 20 s
+      phone.republishMs = 2000;
       fresh.importForm(`whisperbox://form?id=${fA}&by=${addrA}`);
       fresh.importForm(`whisperbox://form?id=${fP}&by=${phone.identity.address}`);
-      assert.ok(await until(b, () => !!fresh.state().forms[fA] && !!fresh.state().forms[fP], 10000), "a fresh phone gets both forms by ASK, from their creators (C++ and JS)");
+      assert.ok(await until(b, () => !!fresh.state().forms[fA] && !!fresh.state().forms[fP], 15000), "a fresh phone gets both forms from their creators' re-publish (C++ and JS)");
+      phone.republishMs = 0;
       assert.strictEqual(fresh.diag.rbsrRx + fresh.diag.legacyReseeds, 0, "no catch-up rounds, no reseeds");
 
       // 6. 0.3.2 lifecycle across implementations: desktop closes + re-opens, phone answers

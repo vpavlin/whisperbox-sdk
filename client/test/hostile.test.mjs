@@ -24,7 +24,7 @@ const FRAMES = [
 
 test("hostile frames are dropped before the log, the clock and the store", async () => {
   const store = mem();
-  const a = new WhisperboxClient({ store, send: async () => {} });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store, send: async () => {} });
   await a.init(); a.onConnected();
   const fid = a.createForm({ title: "victim", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
   const before = a.log.length;
@@ -46,13 +46,13 @@ test("hostile frames are dropped before the log, the clock and the store", async
 
 test("a stored log poisoned by an older version loads without the bad event", async () => {
   const store = mem();
-  const a = new WhisperboxClient({ store, send: async () => {} });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store, send: async () => {} });
   await a.init(); a.onConnected();
   a.createForm({ title: "keep me", questions: [{ id: "q1", type: "text", text: "?" }] });
   const log = JSON.parse(await store.get("wb-log"));
   log.push(JSON.parse(`{"v":1,"id":"resp:bad","type":"response.submit","hlc":{"wall":1,"ctr":0,"dev":"x"},"dev":"x","payload":{"encryptedPayload":123}}`));
   await store.set("wb-log", JSON.stringify(log));
-  const b = new WhisperboxClient({ store, send: async () => {} });
+  const b = new WhisperboxClient({ receiptDelayMs: 0, store, send: async () => {} });
   await b.init();
   assert.ok(!b.log.some((e) => e.id === "resp:bad"), "the malformed event is skipped");
   assert.strictEqual(Object.keys(b.snapshot().state.forms).length, 1, "the good events load");
@@ -60,8 +60,8 @@ test("a stored log poisoned by an older version loads without the bad event", as
 
 test("answer tags are random, links that can't be valid are refused", async () => {
   const wire = [];
-  const a = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(x); } });
-  const b = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(x); } });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(x); } });
+  const b = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(x); } });
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const m = wire.shift(); a.ingest([m]); b.ingest([m]); } };
   const fid = a.createForm({ title: "tags", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
@@ -80,7 +80,7 @@ test("answer tags are random, links that can't be valid are refused", async () =
 // open-review 2026-10-29: the same vectors as the C++ e2e block
 test("deep JSON, huge HLC counters, off-curve form keys are refused; the clock stays valid", async () => {
   const store = mem();
-  const a = new WhisperboxClient({ store, send: async () => {} });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store, send: async () => {} });
   await a.init(); a.onConnected();
   const before = a.log.length;
   // FR-1: 50,000 nested arrays
@@ -109,7 +109,7 @@ test("deep JSON, huge HLC counters, off-curve form keys are refused; the clock s
 test("v1 catch-up frames are ignored: nobody serves anybody (ADR 0024)", async () => {
   const sent = [];
   let t = 1_800_000_000_000;
-  const a = new WhisperboxClient({ store: mem(), send: async (m) => { sent.push(m); }, now: () => t });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (m) => { sent.push(m); }, now: () => t });
   await a.init(); a.onConnected();
   for (let i = 0; i < 3; i++) a.createForm({ title: "f" + i, questions: [{ id: "q1", type: "text", text: "?" }] });
   sent.length = 0;
@@ -120,13 +120,13 @@ test("v1 catch-up frames are ignored: nobody serves anybody (ADR 0024)", async (
 
 test("a stored log with an unsigned close loads without it (FR-7)", async () => {
   const store = mem();
-  const a = new WhisperboxClient({ store, send: async () => {} });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store, send: async () => {} });
   await a.init(); a.onConnected();
   const f = a.createForm({ title: "stays open", questions: [{ id: "q1", type: "text", text: "?" }] });
   const log = JSON.parse(await store.get("wb-log"));
   log.push({ v: 1, id: "close:" + f.formId + ":forged", type: "form.close", hlc: { wall: Date.now() + 1000, ctr: 0, dev: "x" }, dev: "x", payload: { formId: f.formId, author: a.identity.address } });
   await store.set("wb-log", JSON.stringify(log));
-  const b = new WhisperboxClient({ store, send: async () => {} });
+  const b = new WhisperboxClient({ receiptDelayMs: 0, store, send: async () => {} });
   await b.init();
   assert.strictEqual(b.snapshot().state.forms[f.formId].status, "open");
 });
@@ -134,8 +134,8 @@ test("a stored log with an unsigned close loads without it (FR-7)", async () => 
 // open-review 2026-10-30 (the 0.5.1 re-review): the decrypted path, numbers, bare ids
 test("a sealed deep answer, a 1e300 limit and a bare-id answer are refused (FR-1/2/3)", async () => {
   const wire = [];
-  const a = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["a", x]); } });
-  const b = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["b", x]); } });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(["a", x]); } });
+  const b = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(["b", x]); } });
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const [from, m] = wire.shift(); (from === "a" ? b : a).ingest([m]); } };
   const fid = a.createForm({ title: "deep target", questions: [{ id: "q1", type: "text", text: "?" }] }).formId;

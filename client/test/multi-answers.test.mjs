@@ -9,7 +9,7 @@ async function pair() {
   const peers = [], kept = [];
   const mk = async () => {
     // a fake Store too: opening a link pulls what was sent (a node keeps only forms it opened)
-    const c = new WhisperboxClient({ store: mem(), send: async (b) => { kept.push(b); for (const p of peers) if (p !== c) p.ingest([b]); },
+    const c = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (b) => { kept.push(b); for (const p of peers) if (p !== c) p.ingest([b]); },
                                      pull: () => { for (const m of kept) c.ingest([m], { source: "history" }); } });
     await c.init(); c.onConnected(); peers.push(c); return c;
   };
@@ -78,7 +78,7 @@ test("ADR 0023: form files - export, open offline, refuse tampered or padded fil
   const fid = a.createForm({ title: "Shipped", questions: [{ id: "q1", type: "boolean", text: "ok?", required: true }] }).formId;
   const ex = a.exportForm(fid);
   assert.ok(ex.ok && JSON.parse(ex.file).events[0].type === "form.publish");
-  const lone = new WhisperboxClient({ store: mem(), send: async () => {} });
+  const lone = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async () => {} });
   await lone.init();
   const fj = JSON.parse(ex.file);
   const tam = JSON.parse(ex.file); tam.events[0].payload.title = "evil";

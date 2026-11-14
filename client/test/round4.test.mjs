@@ -14,8 +14,8 @@ async function pair() {
   // a fake Store: every frame sent stays here; opening a link pulls it (a node keeps only forms it opened)
   const wire = [], kept = [];
   const pull = (c) => () => { for (const m of kept) c.ingest([m], { source: "history" }); };
-  const a = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["a", x]); kept.push(x); }, pull: () => pull(a)() });
-  const b = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["b", x]); kept.push(x); }, pull: () => pull(b)() });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(["a", x]); kept.push(x); }, pull: () => pull(a)() });
+  const b = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(["b", x]); kept.push(x); }, pull: () => pull(b)() });
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const [from, m] = wire.shift(); (from === "a" ? b : a).ingest([m]); } };
   const fid = a.createForm({ title: "r4", questions: [{ id: "q", type: "textarea", text: "?" }] }).formId;

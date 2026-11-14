@@ -9,7 +9,7 @@ async function net(n) {
   let t = 1_800_000_000_000;
   const peers = [], wire = [];
   for (let i = 0; i < n; i++) {
-    const p = new WhisperboxClient({ store: mem(), now: () => t, minuteMs: 60000, msgsPerEpoch: 1e6,
+    const p = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), now: () => t, minuteMs: 60000, msgsPerEpoch: 1e6,
       send: async (bytes, topic) => { if (p.offline) throw new Error("offline"); wire.push({ from: p, bytes, topic }); } });
     await p.init(); p.onConnected(); peers.push(p);
   }
@@ -33,4 +33,18 @@ for (const anonymous of [false, true]) test(`retries are jittered${anonymous ? "
   const n = answerSends(log, b);
   if (anonymous) assert.ok(n <= 6, "1 send + at most 5 retries: " + n);
   else assert.ok(n >= 9, "the long schedule continues: " + n);
+});
+
+test("F3: an answer's HLC is the 10 minutes it was sent in; edits in one window keep their order", async () => {
+  const { peers: [a, b], pump, advance } = await net(2);
+  const fid = a.createForm({ title: "f3", allowEdits: true, questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
+  b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`); pump();
+  assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "first" }]).ok); pump();
+  advance(60000);
+  assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "second" }]).ok); pump();
+  const mine = b.log.filter((e) => e.type === "response.submit");
+  assert.ok(mine.every((e) => e.hlc.wall % 600000 === 0), "walls are 10-minute marks");
+  a.snapshot();
+  const r = a.decrypt(a.state()).responses[fid];
+  assert.strictEqual(r.length, 1); assert.strictEqual(r[0].answers[0].value, "second", "the edit wins");
 });

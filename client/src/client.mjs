@@ -240,6 +240,9 @@ export class WhisperboxClient {
     // wire v2 (ADR 0024): send(bytes, topic); join(topics) and pull() (a Store pull of joined topics)
     // come from the host's transport. Time can be shrunk for tests (o.minuteMs).
     this.joinHook = o.join || null; this.pullHook = o.pull || null;
+    // receipts wait 1-5 min (random) in a per-bucket outbox, then go out as one event (ADR 0027 D);
+    // tests pass receiptDelayMs: 0 to send at once
+    this.receiptDelayMs = o.receiptDelayMs; this.rcptOutbox = {};
     this.minute = o.minuteMs || 60000; this.perEpoch = o.msgsPerEpoch || 10; this.republishMs = o.republishMs || 0;
     this.maxPerForm = o.maxAnswersPerForm || MAX_ANSWERS_PER_FORM;   // R2-3 (tests lower it)
     this.joined = new Set(); this.outQ = []; this.outSeq = 0; this.rlnTokens = this.perEpoch; this.rlnAt = 0;
@@ -274,6 +277,7 @@ export class WhisperboxClient {
     this.mySubs = parse(await this.store.get("wb-mysubs"), {});
     this.hidden = new Set(parse(await this.store.get("wb-hidden"), []));
     this.myAnswers = parse(await this.store.get("wb-myanswers"), {});   // formId -> {answers, submittedAt}
+    this.rcptOutbox = parse(await this.store.get("wb-rcpt-outbox"), {});   // bucket topic -> {due, items} receipts not sent yet
     const dr = parse(await this.store.get("wb-drafts"), {});
     this.drafts = dr.forms || {}; this.answerDrafts = dr.answers || {}; this.autoReceipts = new Set(dr.autoReceipts || []);
     this.seen = parse(await this.store.get("wb-seen"), {});
@@ -319,6 +323,7 @@ export class WhisperboxClient {
   _tick() {
     if (!this.nodeReady) return;
     // wire v2 (ADR 0024): no catch-up rounds; the queue drains within the RLN budget
+    for (const [topic, box] of Object.entries(this.rcptOutbox || {})) if (box && box.due <= this.now()) this.flushReceipts(topic);
     this.drain();
     if (this.now() - this.lastHousekeep >= Math.min(5000, this.minute / 12)) { this.lastHousekeep = this.now(); this.housekeeping(); this.wireSchedule(); }
   }
@@ -385,7 +390,15 @@ export class WhisperboxClient {
     if (this.rcptResends.length >= 30) return;
     this.rcptResends.push(this.now());
     this.rcptResentAt[key] = this.now();
-    this.emitReceipts(fid, [cid]);
+    // the receipt already sent, byte-identical: a fresh one with new decoys showed which entry is real
+    // (anoncomms review of v3, item 1). Only if none is held (confirmed elsewhere), a new one.
+    const st = this.state();
+    const v = typeof dec.replyPub === "string" ? this.answerSecret(st, fid, cid, dec.replyPub.toLowerCase()) : null;
+    const held = this.log.find((x) => (v && x.type === EventType.RESPONSE_RECEIPT && (x.payload?.r || []).some((y) => y.t === v.tag))
+      || (x.type === EventType.RESPONSE_CONFIRM && formIdOfEvent(x) === fid && lc(x.payload?.author ?? "") === lc(this.identity.address)
+        && (x.payload?.confirmationId === cid || (Array.isArray(x.payload?.confirmationIds) && x.payload.confirmationIds.includes(cid)))));
+    if (held) this.queueReceipt(fid, held);
+    else if (!(v && Object.values(this.rcptOutbox || {}).some((b) => (b?.items || []).some((x) => x.t === v.tag)))) this.emitReceipts(fid, [cid]);
   }
   relevantForms() {
     const out = new Set([...this.watched, ...Object.keys(this.mySubs), ...Object.keys(this.pins), ...Object.keys(this.answerDrafts), ...Object.keys(this.myAnswers)]);
@@ -466,15 +479,6 @@ export class WhisperboxClient {
     this.formSentAt[formId] = this.now();
     this.sendEvents(formId, evs, prio, "form:" + formId);
   }
-  onAsk(env) {
-    const fid = typeof env.formId === "string" ? lc(env.formId) : "";
-    if (!fid || fid.length > 128) return;
-    const f = this.state().forms[fid];
-    if (!f || !(f.creator === this.identity?.address || this.isCoOwner(f))) return;   // only the creator side answers
-    if (this.askAnsweredAt[fid] && this.now() - this.askAnsweredAt[fid] < 10 * this.minute) return;
-    this.askAnsweredAt[fid] = this.now();
-    this.publishFormState(fid, 3);
-  }
   // When the next retry of an answer is due after send number k (0 = the first): 10 min x5, hourly x4,
   // then 6-hourly, each +/-30% at random (privacy review F4; as the core)
   retryNextAt(k) {
@@ -489,26 +493,19 @@ export class WhisperboxClient {
     const st = this.state();
     for (const f of Object.values(st.forms)) {
       if (f.creator !== this.identity?.address) continue;
-      let h = 0; for (const c of f.id) h = (h * 31 + c.charCodeAt(0)) >>> 0;
-      const every = hour + (hour * ((h % 21) - 10)) / 100;
+      // every hour +/-25%, drawn at random per send (privacy review F5: a per-form fixed offset was
+      // predictable from the public form id)
+      this.formNextAt = this.formNextAt || {};
       const closed = f.status !== "open";
       if (closed && (this.formClosedSends[f.id] || 0) >= 3) continue;
-      if (now - (this.formSentAt[f.id] || 0) < every) continue;
+      if (now < (this.formNextAt[f.id] ?? (this.formSentAt[f.id] || 0) + hour)) continue;
+      this.formNextAt[f.id] = now + Math.floor(hour * (0.75 + 0.5 * (parseInt(C.randomHex(2), 16) / 65535)));
       if (closed) this.formClosedSends[f.id] = (this.formClosedSends[f.id] || 0) + 1;
       this.publishFormState(f.id, 5);
     }
-    for (const fid of this.watched) {
-      // held - unless it is another creator's form under that id and the link names someone else:
-      // keep asking for the real one (audit W2-7)
-      const pin = this.pins[fid];
-      if (st.forms[fid] && (!pin || lc(st.forms[fid].creator || "") === lc(pin))) { delete this.askCount[fid]; continue; }
-      if (this.askSentAt[fid] === undefined) this.askSentAt[fid] = now;
-      const n = this.askCount[fid] || 0;
-      const gap = n === 0 ? minute / 3 : n === 1 ? 10 * minute : n === 2 ? 20 * minute : 60 * minute;
-      if (n >= 26 || now - this.askSentAt[fid] < gap) continue;
-      this.askSentAt[fid] = now; this.askCount[fid] = n + 1;
-      this.enqueue(4, wireTopicFor(fid), { v: 2, type: "ASK", formId: fid }, "ask:" + fid);
-    }
+    // no ASK any more (privacy review F1/F5, ADR 0028): it named the form in clear and made the creator
+    // answer at once (a presence oracle). A missing form comes from the Store pull (every 15 min) or the
+    // creator's hourly re-publish.
     const retryAt = [10, 20, 30, 40, 50, 110, 170, 230, 290];
     let dirty = false;
     for (const [fid, entry] of Object.entries(this.myAnswers)) {
@@ -572,11 +569,7 @@ export class WhisperboxClient {
       for (const e of [...env.events.filter(first), ...env.events.filter((x) => !first(x))]) { try { this.ingestOne(e, true); } catch { this.diag.rxBad = (this.diag.rxBad || 0) + 1; } }
       return true;
     }
-    if (env.type === "ASK") {   // a live ASK only, and it costs a frame token (audit W2-3/W2-6)
-      if (this._rxLive === false) return true;
-      if (!this.takeToken("ctl", 120)) { this.diag.ctlDropBudget = (this.diag.ctlDropBudget || 0) + 1; return true; }
-      this.onAsk(env); return true;
-    }
+    if (env.type === "ASK") { this.diag.askIgnored = (this.diag.askIgnored || 0) + 1; return true; }   // older peers' ASK: never answered (ADR 0028)
     return false;
   }
   /** One event from the network (live, Store or a bundle): checks, budget (live only; a copy we hold
@@ -609,7 +602,7 @@ export class WhisperboxClient {
       this.noteNetTime(e);
       if (mergeOne(this.log, e)) {
         this.logBytes += eBytes - oldBytes;
-        if (held === undefined && isResp) { this.logResponses++; if (this._wantedForm) { this.respPerForm = this.respPerForm || {}; this.respPerForm[this._wantedForm] = (this.respPerForm[this._wantedForm] || 0) + 1; } }
+        if (held === undefined && isResp) { this.logResponses++; this.noteNewAnswer(e); if (this._wantedForm) { this.respPerForm = this.respPerForm || {}; this.respPerForm[this._wantedForm] = (this.respPerForm[this._wantedForm] || 0) + 1; } }
         this.held.set(key, e.hlc); this.heldBytes.set(key, eBytes);
         if (isResp && !this.firstSeen[e.id]) { this.firstSeen[e.id] = this.now(); this.saveFirstSeenSoon(); }
         // a co-owner grant naming me is an invitation: nothing is pulled until it is accepted (R2-1)
@@ -630,7 +623,8 @@ export class WhisperboxClient {
     // dishonest Store can't date an honest answer after the close, an honest copy corrects a later claim
     if (this.netLive.has(e.id)) return false;   // the first live time is final (R2-5, R3-3)
     const hw = Number.isInteger(e.hlc?.wall) ? e.hlc.wall : -1;
-    if (hw < 0 || Math.abs(t - hw) > NET_HLC_TOL_MS) { this.diag.netDisagree = (this.diag.netDisagree || 0) + 1; return false; }
+    // an answer's HLC is floored to 10 min (ADR 0028 F3): the network time is up to 10 min after it
+    if (hw < 0 || t < hw - NET_HLC_TOL_MS || t > hw + NET_HLC_TOL_MS + 600000) { this.diag.netDisagree = (this.diag.netDisagree || 0) + 1; return false; }
     if (prev && prev <= t) return false;
     if (this._rxLive !== false) this.netLive.add(e.id);
     this.netTimes[e.id] = t;
@@ -734,7 +728,7 @@ export class WhisperboxClient {
     const key = eventKey(e);
     if (mergeOne(this.log, e)) {
       const n = JSON.stringify(e).length;
-      if (!this.held.has(key) && e.type === EventType.RESPONSE_SUBMIT) this.logResponses++;
+      if (!this.held.has(key) && e.type === EventType.RESPONSE_SUBMIT) { this.logResponses++; this.noteNewAnswer(e); }
       this.logBytes += n - (this.heldBytes.get(key) || 0);
       this.held.set(key, e.hlc); this.heldBytes.set(key, n); this.clock.receive(e.hlc); this.saveLog();
     }
@@ -873,6 +867,7 @@ export class WhisperboxClient {
   }
   recountLog() {
     this.logBytes = 0; this.logResponses = 0; this.held = new Map(); this.heldBytes = new Map();
+    this._rpEpoch = (this._rpEpoch || 0) + 1; this._rpNew = [];   // receipt pairs: rebuilt from the whole log (R7-2)
     for (const e of this.log) {
       const n = JSON.stringify(e).length, k = eventKey(e);
       this.logBytes += n; if (e.type === EventType.RESPONSE_SUBMIT) this.logResponses++;
@@ -881,7 +876,10 @@ export class WhisperboxClient {
   }
   state() {
     const st = computeState(this.log, { identity: this.identity.address, prefer: this.pins });
-    return st.receiptTags ? resolveReceipts(st, this.verifiedReceipts(st)) : st;   // blinded receipts I can verify (ADR 0027)
+    // blinded receipts I can verify (ADR 0027), and mine still in the outbox (they count here at once)
+    const out = Object.values(this.rcptOutbox || {}).flatMap((b) => (b?.items || []).map((x) => [x.formId, x.cid, x.at]));
+    if (st.receiptTags) out.push(...this.verifiedReceipts(st));
+    return out.length ? resolveReceipts(st, out) : st;
   }
   // ── Blinded receipts v3 (ADR 0027) ──
   // The per-answer secret S (cached: an ECDH each): the respondent's from its reply key and the form's
@@ -894,10 +892,10 @@ export class WhisperboxClient {
     if (this._rsec.has(k)) return this._rsec.get(k);
     let v = null;
     try {
-      let S = null;
-      if (replyPub) { const fk = this.formKeys(st).get(f.publicKey); if (fk) S = C.receiptSecret(fk.priv, C.fromHex(replyPub)); }
-      else S = C.receiptSecret(C.deriveReplyKey(this.identity, formId, cid).priv, C.fromHex(f.publicKey));
-      if (S) v = { S, tag: C.receiptTagOf(S), rtag: C.replyTagOf(S) };
+      let S = null;   // both keys must be curve points (audit R7-5, as the core)
+      if (replyPub) { const fk = this.formKeys(st).get(f.publicKey); if (fk && C.validPubPoint(replyPub)) S = C.receiptSecret(fk.priv, C.fromHex(replyPub)); }
+      else if (C.validPubPoint(f.publicKey)) S = C.receiptSecret(C.deriveReplyKey(this.identity, formId, cid).priv, C.fromHex(f.publicKey));
+      if (S) v = { S, tag: C.receiptTagOf(S, formId, cid), rtag: C.replyTagOf(S, formId, cid) };
     } catch { v = null; }
     if (this._rsec.size >= 60000) this._rsec.clear();
     this._rsec.set(k, v);
@@ -905,14 +903,37 @@ export class WhisperboxClient {
   }
   // Every answer this device can name, with its secret: its own (reply key) and those it opened as the
   // form's creator or co-owner (the answer's reply key). [{formId, cid, S, tag, rtag}]
-  // cached until an answer arrives, my answers or my keys change - not per log event (audit R6-2, R6-7)
+  // a new answer in the log: its pair is added on the next receiptPairs, without a rescan (R7-2)
+  noteNewAnswer(e) {
+    this._rpNew = this._rpNew || [];
+    if (this._rpNew.length >= 60000) { this._rpEpoch = (this._rpEpoch || 0) + 1; this._rpNew = []; return; }
+    this._rpNew.push(e);
+  }
+  // rebuilt only when my answers, keys, forms or the whole log change; new answers are added on their own
+  // (audit R6-2, R6-7, R7-2: a rescan per answer was O(N^2))
   receiptPairs(st) {
-    const key = [this.identity?.address, this.logResponses, Object.keys(this.mySubs || {}).length, Object.values(this.myAnswers || {}).reduce((n, a) => n + 1 + (a?.earlier?.length || 0), 0),
+    const key = [this.identity?.address, this._rpEpoch || 0, Object.keys(this.mySubs || {}).length, Object.values(this.myAnswers || {}).reduce((n, a) => n + 1 + (a?.earlier?.length || 0), 0),
       this.coAccepted?.size || 0, this.cardKeys?.size || 0, Object.keys(this.pins || {}).length, Object.keys(st.forms).length].join("|");
-    if (this._rpairs && this._rpairs.key === key) return this._rpairs.list;
+    if (this._rpairs && this._rpairs.key === key) {
+      if (this._rpNew?.length) {
+        const keys = this.formKeys(st);
+        const list = [...this._rpairs.list];   // a new array: receiptWanted notices the change
+        for (const e of this._rpNew) { const pr = this.pairOfAnswer(st, keys, e); if (pr) list.push(pr); }
+        this._rpNew = []; this._rpairs = { key, list };
+      }
+      return this._rpairs.list;
+    }
     const list = this.receiptPairsUncached(st);
-    this._rpairs = { key, list };
+    this._rpairs = { key, list }; this._rpNew = [];
     return list;
+  }
+  pairOfAnswer(st, keys, e) {
+    if (!keys.size || e?.type !== EventType.RESPONSE_SUBMIT) return null;
+    const d = this.openWith(keys, st, e.payload.encryptedPayload);
+    // a receipt id of 1-128 characters only: a huge one went into confirmations (audit R6-3)
+    if (!d || !validConfirmationId(d.confirmationId) || typeof d.replyPub !== "string" || !C.validPubPoint(d.replyPub)) return null;
+    const fid = lc(String(d.formId)), v = this.answerSecret(st, fid, d.confirmationId, d.replyPub.toLowerCase());
+    return v ? { formId: fid, cid: d.confirmationId, ...v } : null;
   }
   receiptPairsUncached(st) {
     const out = [];
@@ -923,21 +944,14 @@ export class WhisperboxClient {
     const who = this.identity?.address;
     if (who && Object.values(st.forms).some((f) => f.creator === who || this.isCoOwner(f))) {
       const keys = this.formKeys(st);
-      if (keys.size) for (const e of this.log) {
-        if (e.type !== EventType.RESPONSE_SUBMIT) continue;
-        const d = this.openWith(keys, st, e.payload.encryptedPayload);
-        // a receipt id of 1-128 characters only: a huge one went into confirmations (audit R6-3)
-        if (!d || !validConfirmationId(d.confirmationId) || typeof d.replyPub !== "string" || !C.validPubPoint(d.replyPub)) continue;
-        const fid = lc(String(d.formId)), v = this.answerSecret(st, fid, d.confirmationId, d.replyPub.toLowerCase());
-        if (v) out.push({ formId: fid, cid: d.confirmationId, ...v });
-      }
+      if (keys.size) for (const e of this.log) { const pr = this.pairOfAnswer(st, keys, e); if (pr) out.push(pr); }
     }
     return out;
   }
   // A proof counts only if signed by the form's creator or a co-owner; the earliest signed time wins.
   proofAt(st, pair, s) {
     this._rproof = this._rproof || new Map();
-    const k = pair.tag + "|" + s;
+    const k = pair.formId + "|" + pair.cid + "|" + pair.tag + "|" + s;   // per answer, not per tag (R7-1)
     let o = this._rproof.get(k);
     if (o === undefined) { o = C.openReceiptProof(pair.S, pair.formId, pair.cid, s); if (this._rproof.size >= 60000) this._rproof.clear(); this._rproof.set(k, o); }
     if (!o) return null;
@@ -1003,17 +1017,41 @@ export class WhisperboxClient {
       if (v) blind.push({ c, v }); else legacy.push(c);
     }
     if (legacy.length) named(legacy);
-    const at = this.now(), REAL = MAX_RECEIPT_TAGS / 2;
-    for (let i = 0; i < blind.length; i += REAL) {
-      const entries = blind.slice(i, i + REAL).map(({ c, v }) => ({ t: v.tag, s: C.sealReceiptProof(v.S, this.identity, formId, c, at) }));
-      let size = 2; while (size < entries.length) size *= 2;
+    if (!blind.length) return n;
+    // into the bucket's outbox: sent after a random 1-5 min, with everything else queued for the bucket,
+    // as ONE event (ADR 0027 D: no per-form groups, no answer-to-receipt timing)
+    const at = this.now(), topic = wireTopicFor(formId);
+    const box = this.rcptOutbox[topic] || (this.rcptOutbox[topic] = { due: at + this.receiptDelay(), items: [] });
+    for (const { c, v } of blind) if (!box.items.some((x) => x.t === v.tag)) box.items.push({ formId, cid: c, at, t: v.tag, s: C.sealReceiptProof(v.S, this.identity, formId, c, at) });
+    this.saveOutbox();
+    if (box.due <= at) this.flushReceipts(topic);
+    return n + 1;
+  }
+
+  receiptDelay() {
+    if (Number.isFinite(this.receiptDelayMs)) return this.receiptDelayMs;
+    return Math.floor(this.minute * (1 + 4 * (parseInt(C.randomHex(2), 16) / 65535)));   // 1-5 min
+  }
+  saveOutbox() { this.store.set("wb-rcpt-outbox", JSON.stringify(this.rcptOutbox)).catch?.(() => {}); }
+  // One event per 32 receipts in the bucket, decoys to a power of two (at least 8), sorted by tag
+  flushReceipts(topic) {
+    const box = this.rcptOutbox[topic];
+    delete this.rcptOutbox[topic];
+    if (!box || !box.items?.length) { this.saveOutbox(); return 0; }
+    let n = 0;
+    const REAL = MAX_RECEIPT_TAGS / 2;
+    for (let i = 0; i < box.items.length; i += REAL) {
+      const chunk = box.items.slice(i, i + REAL);
+      const entries = chunk.map((x) => ({ t: x.t, s: x.s }));
+      let size = 8; while (size < entries.length) size *= 2;
       while (entries.length < size) entries.push(C.decoyReceiptEntry());
       entries.sort((a, b) => (a.t < b.t ? -1 : 1));   // decoys aren't last
-      const tag = "wb-" + C.randomHex(6), wall = Math.floor(at / 600000) * 600000;
+      const tag = "wb-" + C.randomHex(6), wall = Math.floor(this.now() / 600000) * 600000;
       const e = { v: 1, id: responseReceiptId(entries), type: EventType.RESPONSE_RECEIPT, hlc: { wall, ctr: 0, dev: tag }, dev: tag, payload: { r: entries } };
-      if (!this.adopt(e)) break;
-      this.queueReceipt(formId, e); n++;
+      if (!this.adopt(e)) continue;
+      this.queueReceipt(chunk[0].formId, e); n++;
     }
+    this.saveOutbox();
     return n;
   }
 
@@ -1289,7 +1327,11 @@ export class WhisperboxClient {
     // A fresh random tag per answer on the wire (was sha256(deviceId|formId): the device id is public
     // in every signed event, so the tag linked anonymous answers to a device - review 2026-10-22, WB-5).
     const tag = "wb-" + C.randomHex(6);
-    e.dev = tag; e.hlc = { ...e.hlc, dev: tag };
+    // its clock to the 10 minutes, not the device's millisecond HLC (privacy review F3: a fine clock
+    // linked a respondent's answers and frames); a counter keeps edits in one window in order
+    const W = Math.floor(this.now() / 600000) * 600000;
+    this._ansHlc = this._ansHlc && this._ansHlc.wall === W ? { wall: W, ctr: this._ansHlc.ctr + 1 } : { wall: W, ctr: 0 };
+    e.dev = tag; e.hlc = { wall: W, ctr: this._ansHlc.ctr, dev: tag };
     // peers refuse an event over 256 KiB: say so instead of keeping an answer nobody gets (FR-10, as the core)
     if (!wellFormedEvent(e) || !sendable(e)) return { ok: false, error: "these answers are too long to send - shorten the longest ones" };   // W2-1: also small enough to SEND
     // the answers sent before (several-answer forms): kept, newest last; the latest is the main entry

@@ -13,7 +13,7 @@ async function net(n, opts = {}) {
   let t = 1_800_000_000_000;
   const peers = [], wire = [];
   for (let i = 0; i < n; i++) {
-    const p = new WhisperboxClient({ store: mem(), now: () => t, minuteMs: 60000, msgsPerEpoch: 1e6, ...opts,
+    const p = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), now: () => t, minuteMs: 60000, msgsPerEpoch: 1e6, ...opts,
       send: async (b, topic) => { if (p.offline) throw new Error("offline"); wire.push({ from: p, bytes: b, topic }); } });
     await p.init(); p.onConnected(); peers.push(p);
   }
@@ -36,20 +36,19 @@ test("W2-1: nothing larger than Delivery can carry is made or sent", async () =>
   assert.strictEqual(MAX_WIRE_EVENT_BYTES, 80000);
 });
 
-test("W2-6/W2-3: an ASK from Store is never acted on; live ASKs cost the frame budget", async () => {
+test("W2-6/W2-3 (ADR 0028): ASKs are never answered, live or from Store", async () => {
   const { peers: [a], wire } = await net(1);
   const fid = a.createForm(q).formId;
-  wire.length = 0; a.askAnsweredAt = {};
+  a.drain?.(); wire.length = 0;
   const ask = bytes(JSON.stringify({ v: 2, type: "ASK", formId: fid }));
   a.ingest([ask], { source: "history" });
+  for (let i = 0; i < 20; i++) a.ingest([ask]);
   a.drain?.();
-  assert.strictEqual(wire.length, 0, "a Store copy of an ASK makes the creator send nothing");
-  const c0 = a.diag.ctlDropBudget || 0;
-  for (let i = 0; i < 200; i++) a.ingest([ask]);
-  assert.ok((a.diag.ctlDropBudget || 0) > c0, "a flood of live ASKs runs out of the frame budget");
+  assert.strictEqual(wire.length, 0, "the creator sends nothing for an ASK (no presence oracle, F5)");
+  assert.ok(a.diag.askIgnored >= 21);
 });
 
-test("W2-7: a squatted form id doesn't stop the respondent asking; the real form wins", async () => {
+test("W2-7 (ADR 0028): a squatted form id doesn't stop the respondent; the creator's re-publish brings the real form", async () => {
   const { peers: [a, x, r], pump, advance } = await net(3);
   a.offline = true;
   assert.ok(a.createForm({ ...q, id: "form-5a5a5a5a" }).ok, "the real creator (offline) makes the form");
@@ -58,9 +57,9 @@ test("W2-7: a squatted form id doesn't stop the respondent asking; the real form
   pump();
   assert.strictEqual(r.state().forms["form-5a5a5a5a"]?.creator, x.identity.address, "only the squatter's form so far");
   a.offline = false;
-  advance(30 * 60000);
+  advance(90 * 60000);   // the hourly re-publish (+/-25%)
   const f = r.snapshot().state.forms["form-5a5a5a5a"];
-  assert.ok(f && f.creator === a.identity.address && f.canRespond, "it kept asking; the real creator answered: " + JSON.stringify(f?.creator));
+  assert.ok(f && f.creator === a.identity.address && f.canRespond, "the real creator's re-publish arrived: " + JSON.stringify(f?.creator));
 });
 
 test("W2-8: lengths are UTF-8 bytes and the close bounds match the core", () => {
@@ -81,8 +80,8 @@ test("W2-11: deadlines use the network time; a Store copy keeps its publish time
 test("W2-11: an answer backdated in its payload, sent after the close, is judged by its Store time", async () => {
   let tA = 1_800_000_000_000, tB = tA;
   const wire = [];
-  const a = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["a", x]); }, now: () => tA });
-  const b = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["b", x]); }, now: () => tB });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(["a", x]); }, now: () => tA });
+  const b = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(["b", x]); }, now: () => tB });
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const fid = a.createForm(q).formId;
   b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);

@@ -12,7 +12,7 @@ async function net(n) {
   let t = 1_800_000_000_000;
   const peers = [], wire = [];
   for (let i = 0; i < n; i++) {
-    const p = new WhisperboxClient({ store: mem(), now: () => t, minuteMs: 60000, msgsPerEpoch: 1e6,
+    const p = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), now: () => t, minuteMs: 60000, msgsPerEpoch: 1e6,
       send: async (bytes, topic) => { wire.push({ from: p, bytes, topic }); } });
     await p.init(); p.onConnected(); peers.push(p);
   }
@@ -140,4 +140,40 @@ test("held receipts survive the prune (only new ones must bring a new proof)", a
   wire.length = 0; assert.ok(a.confirmAll(fid).ok); pump();
   for (const p of [a, b]) { p.pruneUnwanted(); assert.strictEqual(p.log.filter((x) => x.type === "response.receipt").length, 1); }
   assert.ok(b.snapshot().state.forms[fid].myConfirmed && a.state().forms[fid].confirmations.includes(cid));
+});
+
+test("v3 review: every real proof is RECEIPT_PROOF_BYTES; receipts wait in a per-bucket outbox and go out as ONE event", async () => {
+  for (let i = 0; i < 20; i++) {
+    const f = C.generateIdentity(), r = C.generateIdentity();
+    const S = C.receiptSecret(r.priv, f.pub);
+    assert.strictEqual(C.sealReceiptProof(S, f, "form-" + i, C.randomHex(8), 1_800_000_000_000 + i).length, 2 * C.RECEIPT_PROOF_BYTES);
+  }
+  assert.throws(() => C.sealReceiptProof(C.randomHex(32), C.generateIdentity(), "f", "c", 999_999_999_999), "a short `at` is refused (R7-4)");
+  const w = await net(3); const [a, b, c] = w.peers;
+  a.receiptDelayMs = 3 * 60000;
+  const f1 = a.createForm(q).formId;
+  let f2 = a.createForm(q).formId;
+  const { wireTopicFor } = await import("../src/client.mjs");
+  while (wireTopicFor(f2) !== wireTopicFor(f1)) f2 = a.createForm(q).formId;   // two forms in one bucket
+  for (const fid of [f1, f2]) { b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`); c.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`); }
+  w.pump();
+  assert.ok(b.submitResponse(f1, [{ questionId: "q1", value: "1" }]).ok && c.submitResponse(f2, [{ questionId: "q1", value: "2" }]).ok); w.pump();
+  a.snapshot(); w.wire.length = 0;
+  assert.ok(a.confirmAll(f1).ok && a.confirmAll(f2).ok);
+  assert.ok(a.state().forms[f1].confirmations.length === 1, "confirmed here at once");
+  assert.strictEqual(sentBy(w.wire, a).filter((e) => e.type === "response.receipt").length, 0, "nothing sent yet");
+  w.tick(3 * 60000 + 1000); a.tick();
+  const rc = sentBy(w.wire, a).filter((e) => e.type === "response.receipt");
+  assert.strictEqual(rc.length, 1, "one event for the bucket");
+  assert.ok(rc[0].payload.r.length === 8, "two real entries + decoys to 8");
+  w.pump();
+  assert.ok(b.snapshot().state.forms[f1].myConfirmed && c.snapshot().state.forms[f2].myConfirmed);
+});
+
+test("R7-1: one reply key reused for two answers doesn't let one proof confirm both", async () => {
+  const f = C.generateIdentity(), r = C.generateIdentity();
+  const S = C.receiptSecret(r.priv, f.pub);
+  assert.notStrictEqual(C.receiptTagOf(S, "form-1", "aaaa"), C.receiptTagOf(S, "form-1", "bbbb"), "the tag is per answer");
+  const p = C.sealReceiptProof(S, f, "form-1", "aaaa", 1_800_000_000_000);
+  assert.ok(C.openReceiptProof(S, "form-1", "aaaa", p) && !C.openReceiptProof(S, "form-1", "bbbb", p));
 });

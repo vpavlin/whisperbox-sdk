@@ -15,7 +15,7 @@ async function net(n, opts = {}) {
   let t = 1_800_000_000_000;
   const peers = [], wire = [];
   for (let i = 0; i < n; i++) {
-    const p = new WhisperboxClient({ store: mem(), now: () => t, minuteMs: 60000, msgsPerEpoch: 1e6, ...opts,
+    const p = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), now: () => t, minuteMs: 60000, msgsPerEpoch: 1e6, ...opts,
       send: async (b, topic) => { wire.push({ from: p, bytes: b, topic }); } });
     await p.init(); p.onConnected(); peers.push(p);
   }
@@ -64,7 +64,7 @@ test("R2-3: one form stops at its own answer cap; another form still takes answe
   assert.strictEqual(a.respPerForm[f2], 1, "f2 still takes its answer");
 });
 
-test("R2-7: a retried answer gets ONE receipt again, not the batch it was in", async () => {
+test("R2-7 (as amended by ADR 0027): a retried answer gets its receipt again, byte-identical", async () => {
   const { peers: [a, b, c], wire, pump } = await net(3);
   const fid = a.createForm(q).formId;
   for (const p of [b, c]) p.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);
@@ -78,8 +78,12 @@ test("R2-7: a retried answer gets ONE receipt again, not the batch it was in", a
   a.ingest([frame(mine)]);   // b's retry
   a.drain();
   const sent = wire.filter((m) => m.from === a).flatMap((m) => JSON.parse(new TextDecoder().decode(m.bytes)).events || []);
-  const tag = b.answerSecret(b.state(), fid, cid, null).tag;   // receipts v3 (ADR 0027): one real entry + one decoy
-  assert.ok(sent.length === 1 && sent[0].type === "response.receipt" && sent[0].payload.r.length === 2 && sent[0].payload.r.filter((x) => x.t === tag).length === 1, "one single-answer receipt: " + JSON.stringify(sent.map((e) => e.id)));
+  // the stored receipt event again, byte-identical: a fresh one with new decoys would show which entry is
+  // real (anoncomms on v3); the re-send cap bounds the cost of re-sending a batch (R6-9)
+  const tag = b.answerSecret(b.state(), fid, cid, null).tag;
+  const stored = a.log.find((e) => e.type === "response.receipt" && e.payload.r.some((x) => x.t === tag));
+  assert.ok(sent.length === 1 && JSON.stringify(sent[0]) === JSON.stringify(stored), "the same receipt event: " + JSON.stringify(sent.map((e) => e.id)));
+  assert.ok(stored.payload.r.length >= 8, "padded to at least 8 entries");
 });
 
 test("R2-8: with my answers' record missing, the prune keeps answers it can't place", async () => {

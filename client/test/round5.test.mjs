@@ -11,7 +11,7 @@ const bytes = (s) => new TextEncoder().encode(s);
 const frame = (ev) => bytes(JSON.stringify({ v: 1, type: "EVENT", event: ev }));
 
 async function creator() {
-  const a = new WhisperboxClient({ store: mem(), send: async () => {} });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async () => {} });
   await a.init(); a.onConnected();
   const fid = a.createForm({ title: "r5", questions: [{ id: "q", type: "text", text: "?" }] }).formId;
   return { a, fid };

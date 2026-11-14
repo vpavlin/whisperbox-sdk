@@ -12,7 +12,7 @@ async function net(n, opts = {}) {
   let t = 1_800_000_000_000;
   const peers = [], wire = [];
   for (let i = 0; i < n; i++) {
-    const p = new WhisperboxClient({ store: mem(), now: () => t, minuteMs: 60000, ...opts,
+    const p = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), now: () => t, minuteMs: 60000, ...opts,
       send: async (bytes, topic) => { if (p.offline) throw new Error("offline"); wire.push({ from: p, bytes, topic }); } });
     await p.init(); p.onConnected(); peers.push(p);
   }
@@ -53,18 +53,20 @@ test("an answer the creator missed goes out again until the receipt, then stops"
   assert.strictEqual(b.diag.txTotal, tx, "no more retries after the receipt");
 });
 
-test("ASK: only the creator side answers; a bystander sends nothing", async () => {
+test("no ASK (ADR 0028): a respondent missing a form sends nothing; the creator's re-publish brings it", async () => {
   const { peers: [a, b, c], wire, pump, advance } = await net(3);
   b.offline = true;
   const fid = a.createForm(q).formId;
-  c.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);   // c holds the form too (opened first: only opened forms are kept)
+  c.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);
   pump();   // b missed the publish (and there is no Store here)
   b.offline = false;
-  const cTx = c.diag.txTotal;
+  const bTx = b.diag.txTotal, cTx = c.diag.txTotal;
   b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);
-  advance(30000);   // b's first ASK after 20 s
-  assert.ok(b.state().forms[fid], "the creator answered b's ASK with the form");
-  assert.strictEqual(c.diag.txTotal, cTx, "a respondent holding the form never answers an ASK");
+  advance(5 * 60000);
+  assert.strictEqual(b.diag.txTotal, bTx, "b sends no ASK");
+  advance(85 * 60000);   // the hourly re-publish (+/-25%)
+  assert.ok(b.state().forms[fid], "the creator's re-publish brought the form");
+  assert.strictEqual(c.diag.txTotal, cTx, "a respondent holding the form sends nothing");
   assert.ok(wireTopicFor(fid).startsWith("/whisperbox/2/form-"));
   void wire;
 });
@@ -108,7 +110,7 @@ test("forgetting a form drops its events; a log saved before the filter is prune
   // an old log holding a stranger's form (as every node in a bucket used to): pruned when it loads
   const m = new Map(); m.set("wb-log", JSON.stringify(a.log));
   const store = { get: async (k) => m.get(k) ?? null, set: async (k, v) => { m.set(k, v); } };
-  const h = new WhisperboxClient({ store, send: async () => {} });
+  const h = new WhisperboxClient({ receiptDelayMs: 0, store, send: async () => {} });
   await h.init();
   assert.strictEqual(h.log.length, 0, "a stranger's form isn't kept after the update");
   assert.strictEqual(JSON.parse(m.get("wb-log")).length, 0, "...on disk either");

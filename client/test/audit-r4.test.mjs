@@ -10,7 +10,7 @@ const frame = (ev) => new TextEncoder().encode(JSON.stringify({ v: 1, type: "EVE
 const q = { title: "r4", questions: [{ id: "q1", type: "textarea", text: "?", required: true }] };
 const signed = (id, ev) => ({ ...ev, ...C.signEvent(id, ev) });
 const keyOf = (s) => C.identityFromPriv(C.toHex(C.utf8Encode(s.padEnd(32, "z"))).slice(0, 64));
-async function client() { const c = new WhisperboxClient({ store: mem(), msgsPerEpoch: 1e6, send: async () => {} }); await c.init(); c.onConnected(); return c; }
+async function client() { const c = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), msgsPerEpoch: 1e6, send: async () => {} }); await c.init(); c.onConnected(); return c; }
 
 test("R4-1/R6-5: an invitation without the creator's link is only listed, not acceptable, and pins no one", async () => {
   const r = await client();

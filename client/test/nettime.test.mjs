@@ -20,8 +20,8 @@ test("a backdated answer the network saw after the close is out; a Store claimin
   let tA = N, tB = N;
   const wire = [];
   const store = mem();
-  const a = new WhisperboxClient({ store, send: async (x) => { wire.push(["a", x]); }, now: () => tA });
-  const b = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["b", x]); }, now: () => tB });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store, send: async (x) => { wire.push(["a", x]); }, now: () => tA });
+  const b = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(["b", x]); }, now: () => tB });
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = (meta) => { const out = []; while (wire.length) { const [from, m] = wire.shift(); if (from === "a") b.ingest([m]); else { out.push(m); a.ingest([m], meta); } } return out; };
   const fid = a.createForm({ title: "deadline", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
@@ -53,8 +53,8 @@ test("a backdated answer the network saw after the close is out; a Store claimin
 
 test("without network time the answer keeps its HLC and is marked unverified time", async () => {
   const wire = [];
-  const a = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["a", x]); } });
-  const b = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["b", x]); } });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(["a", x]); } });
+  const b = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(["b", x]); } });
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const [from, m] = wire.shift(); (from === "a" ? b : a).ingest([m]); } };
   const fid = a.createForm({ title: "ble", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;

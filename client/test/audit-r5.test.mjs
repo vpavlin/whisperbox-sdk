@@ -10,7 +10,7 @@ const frame = (ev) => new TextEncoder().encode(JSON.stringify({ v: 1, type: "EVE
 const q = { title: "r5", questions: [{ id: "q1", type: "textarea", text: "?", required: true }] };
 const signed = (id, ev) => { const { sig, pub, ...rest } = ev; return { ...rest, ...C.signEvent(id, rest) }; };
 const keyOf = (s) => C.identityFromPriv(C.toHex(C.utf8Encode(s.padEnd(32, "z"))).slice(0, 64));
-async function client() { const c = new WhisperboxClient({ store: mem(), msgsPerEpoch: 1e6, send: async () => {} }); await c.init(); c.onConnected(); return c; }
+async function client() { const c = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), msgsPerEpoch: 1e6, send: async () => {} }); await c.init(); c.onConnected(); return c; }
 const evOf = (c, type, fid) => c.log.find((e) => e.type === type && (e.payload?.formId === fid || e.payload?.id === fid));
 const grant = (who, fid, owner, wall) => signed(who, { v: 1, id: `coowner:${fid}:${owner}:${who.address.slice(2, 8)}`, type: "form.coowner",
   hlc: { wall, ctr: 0, dev: "x" }, dev: "x", payload: { formId: fid, author: who.address, owner, sealedKey: "00" } });

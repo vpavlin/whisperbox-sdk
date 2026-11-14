@@ -20,8 +20,8 @@ test("client flows run with only the app's polyfills (Hermes-like globals)", asy
   const wire = [], kept = [];
   const pullInto = (c) => () => { for (const m of kept) c.ingest([m], { source: "history" }); };
   // a flow test, not a budget test: the default 10 per 10 min on the real clock would hold the later forms back
-  const a = new WhisperboxClient({ store: mem(), msgsPerEpoch: 1e6, send: async (b) => { wire.push(b); kept.push(b); }, pull: () => pullInto(a)() });
-  const b = new WhisperboxClient({ store: mem(), msgsPerEpoch: 1e6, send: async (x) => { wire.push(x); kept.push(x); }, pull: () => pullInto(b)() });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), msgsPerEpoch: 1e6, send: async (b) => { wire.push(b); kept.push(b); }, pull: () => pullInto(a)() });
+  const b = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), msgsPerEpoch: 1e6, send: async (x) => { wire.push(x); kept.push(x); }, pull: () => pullInto(b)() });
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const m = wire.shift(); a.ingest([m]); b.ingest([m]); } };
   const fid = a.createForm({ title: "Ünïcode ✓", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;

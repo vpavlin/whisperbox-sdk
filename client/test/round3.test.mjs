@@ -12,8 +12,8 @@ const bytes = (s) => new TextEncoder().encode(s);
 
 async function pair() {
   const wire = [];
-  const a = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["a", x]); } });
-  const b = new WhisperboxClient({ store: mem(), send: async (x) => { wire.push(["b", x]); } });
+  const a = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(["a", x]); } });
+  const b = new WhisperboxClient({ receiptDelayMs: 0, store: mem(), send: async (x) => { wire.push(["b", x]); } });
   await a.init(); await b.init(); a.onConnected(); b.onConnected();
   const pump = () => { while (wire.length) { const [from, m] = wire.shift(); (from === "a" ? b : a).ingest([m]); } };
   const fid = a.createForm({ title: "r3", questions: [{ id: "q", type: "text", text: "?" }] }).formId;

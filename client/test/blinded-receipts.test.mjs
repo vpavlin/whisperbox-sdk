@@ -177,3 +177,18 @@ test("R7-1: one reply key reused for two answers doesn't let one proof confirm b
   const p = C.sealReceiptProof(S, f, "form-1", "aaaa", 1_800_000_000_000);
   assert.ok(C.openReceiptProof(S, "form-1", "aaaa", p) && !C.openReceiptProof(S, "form-1", "bbbb", p));
 });
+
+test("R8-1: a co-owner who leaves never sends the receipts waiting in its outbox", async () => {
+  const { wire, pump, a, fid, peers: [, , c] } = await answered(3);
+  assert.ok(a.addCoOwner(fid, c.identity.pubHex).ok); pump();
+  assert.ok(c.acceptCoOwner(fid).ok); pump();
+  c.ingest([frameOf(a.log.filter((e) => e.type === "response.submit"))]);   // what its pull would bring
+  c.snapshot();
+  c.receiptDelayMs = 60000;
+  assert.ok(c.confirmAll(fid).ok);
+  assert.strictEqual(Object.keys(c.rcptOutbox).length, 1, "waiting in the outbox");
+  assert.ok(c.leaveCoOwner(fid).ok);
+  assert.strictEqual(Object.keys(c.rcptOutbox).length, 0, "purged on leaving");
+  wire.length = 0; c.tick();
+  assert.strictEqual(sentBy(wire, c).filter((e) => e.type === "response.receipt").length, 0);
+});

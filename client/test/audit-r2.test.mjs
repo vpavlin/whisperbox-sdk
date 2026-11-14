@@ -97,15 +97,18 @@ test("R2-8: with my answers' record missing, the prune keeps answers it can't pl
   assert.strictEqual(b.log.filter((e) => e.type === "response.submit").length, before, "my own answer survives");
 });
 
-test("R2-5: a Store's time: the latest any Store reports; never over a live time", async () => {
+test("R2-5 (as amended by R5-3/R8-3): only a time agreeing with the answer's HLC counts, the earliest; never over a live time", async () => {
   const { peers: [a] } = await net(1);
   const fid = a.createForm(q).formId;
   const pub = a.state().forms[fid].publicKey, now = 1_800_000_000_000;
-  const e1 = answerEv(sealed(pub, { formId: fid, n: 1 }), now), e2 = answerEv(sealed(pub, { formId: fid, n: 2 }), now);
-  a.ingest([frame(e1)], { tsMs: now - 3_600_000, source: "history" });   // one Store: an hour ago
-  a.ingest([frame(e1)], { tsMs: now - 600_000, source: "history" });     // another: 10 min ago
-  assert.strictEqual(a.netTimes[e1.id], now - 600_000, "the later of the two Stores' reports");
+  const h = now - 600_000;   // the answer's (10-minute) HLC
+  const e1 = answerEv(sealed(pub, { formId: fid, n: 1 }), h), e2 = answerEv(sealed(pub, { formId: fid, n: 2 }), now);
+  a.ingest([frame(e1)], { tsMs: now - 3_600_000, source: "history" });   // a Store an hour off: ignored
+  assert.strictEqual(a.netTimes[e1.id], undefined);
+  a.ingest([frame(e1)], { tsMs: h + 240_000, source: "history" });       // agrees
+  a.ingest([frame(e1)], { tsMs: h + 480_000, source: "history" });       // agrees, later: no change
+  assert.strictEqual(a.netTimes[e1.id], h + 240_000, "the earliest agreeing Store time");
   a.ingest([frame(e2)], { tsMs: now });                                  // seen live
-  a.ingest([frame(e2)], { tsMs: now - 3_600_000, source: "history" });   // a Store claims earlier
+  a.ingest([frame(e2)], { tsMs: now - 60_000, source: "history" });      // a Store claims earlier
   assert.strictEqual(a.netTimes[e2.id], now, "a live time isn't moved by a Store");
 });

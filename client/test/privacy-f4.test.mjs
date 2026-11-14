@@ -48,3 +48,15 @@ test("F3: an answer's HLC is the 10 minutes it was sent in; edits in one window 
   const r = a.decrypt(a.state()).responses[fid];
   assert.strictEqual(r.length, 1); assert.strictEqual(r[0].answers[0].value, "second", "the edit wins");
 });
+
+test("R8-2: the answer clock's counter continues after a restart in the same window", async () => {
+  const { peers: [a, b], pump, advance } = await net(2);
+  const fid = a.createForm({ title: "r8", allowEdits: true, questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
+  b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`); pump();
+  assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "first" }]).ok); pump();
+  b._ansHlc = null;   // as after a restart
+  advance(60000);
+  assert.ok(b.submitResponse(fid, [{ questionId: "q1", value: "second" }]).ok); pump();
+  const mine = b.log.filter((e) => e.type === "response.submit").map((e) => e.hlc);
+  assert.ok(mine.length === 2 && mine[0].wall === mine[1].wall && new Set(mine.map((h) => h.ctr)).size === 2, JSON.stringify(mine));
+});

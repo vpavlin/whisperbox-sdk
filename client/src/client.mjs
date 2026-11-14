@@ -623,8 +623,9 @@ export class WhisperboxClient {
     // dishonest Store can't date an honest answer after the close, an honest copy corrects a later claim
     if (this.netLive.has(e.id)) return false;   // the first live time is final (R2-5, R3-3)
     const hw = Number.isInteger(e.hlc?.wall) ? e.hlc.wall : -1;
-    // an answer's HLC is floored to 10 min (ADR 0028 F3): the network time is up to 10 min after it
-    if (hw < 0 || t < hw - NET_HLC_TOL_MS || t > hw + NET_HLC_TOL_MS + 600000) { this.diag.netDisagree = (this.diag.netDisagree || 0) + 1; return false; }
+    // sent inside the 10 minutes after its floored HLC, +/- the 5-min clock lead: [hw - 5, hw + 15] min
+    // (ADR 0028 F3; audit R8-3)
+    if (hw < 0 || t < hw - 5 * 60000 || t > hw + 15 * 60000) { this.diag.netDisagree = (this.diag.netDisagree || 0) + 1; return false; }
     if (prev && prev <= t) return false;
     if (this._rxLive !== false) this.netLive.add(e.id);
     this.netTimes[e.id] = t;
@@ -832,6 +833,7 @@ export class WhisperboxClient {
   pruneUnwanted() {
     if (!this.identity || !this.log.length) return 0;
     this._int = null; this.interest();   // from the whole log first: my own events always stay
+    this.purgeOutbox();   // a forgotten / left form's receipts are never sent (R8-1)
     // my own answers are known by wb-myanswers; if it is behind wb-mysubs, an answer I can't open may be
     // mine: keep them all rather than lose one (audit R2-8)
     const ownUnsure = Object.keys(this.mySubs || {}).some((f) => !this.myAnswers[f]?.eventId);
@@ -1032,9 +1034,25 @@ export class WhisperboxClient {
     if (Number.isFinite(this.receiptDelayMs)) return this.receiptDelayMs;
     return Math.floor(this.minute * (1 + 4 * (parseInt(C.randomHex(2), 16) / 65535)));   // 1-5 min
   }
-  saveOutbox() { this.store.set("wb-rcpt-outbox", JSON.stringify(this.rcptOutbox)).catch?.(() => {}); }
+  // saved once per burst, not per confirmation (audit R8-5)
+  saveOutbox() {
+    if (this._outboxTimer) return;
+    this._outboxTimer = setTimeout(() => { this._outboxTimer = null; this.store.set("wb-rcpt-outbox", JSON.stringify(this.rcptOutbox)).catch?.(() => {}); }, 250);
+  }
+  // receipts for forms I no longer create or co-own are never sent (audit R8-1: forget / leave)
+  purgeOutbox() {
+    const mine = this.interest().mine;
+    let changed = false;
+    for (const [topic, box] of Object.entries(this.rcptOutbox || {})) {
+      const keep = (box?.items || []).filter((x) => mine.has(x.formId));
+      if (keep.length !== (box?.items || []).length) changed = true;
+      if (keep.length) box.items = keep; else { delete this.rcptOutbox[topic]; changed = true; }
+    }
+    if (changed) this.saveOutbox();
+  }
   // One event per 32 receipts in the bucket, decoys to a power of two (at least 8), sorted by tag
   flushReceipts(topic) {
+    this.purgeOutbox();   // R8-1
     const box = this.rcptOutbox[topic];
     delete this.rcptOutbox[topic];
     if (!box || !box.items?.length) { this.saveOutbox(); return 0; }
@@ -1330,7 +1348,11 @@ export class WhisperboxClient {
     // its clock to the 10 minutes, not the device's millisecond HLC (privacy review F3: a fine clock
     // linked a respondent's answers and frames); a counter keeps edits in one window in order
     const W = Math.floor(this.now() / 600000) * 600000;
-    this._ansHlc = this._ansHlc && this._ansHlc.wall === W ? { wall: W, ctr: this._ansHlc.ctr + 1 } : { wall: W, ctr: 0 };
+    // the counter continues from my answers already in this window - also after a restart (R8-2)
+    const mineIds = new Set(Object.values(this.myAnswers || {}).flatMap((a) => [a?.eventId, ...(a?.earlier || []).map((x) => x?.eventId)]).filter(Boolean));
+    let top = -1; for (const x of this.log) if (x.type === EventType.RESPONSE_SUBMIT && mineIds.has(x.id) && x.hlc.wall === W) top = Math.max(top, x.hlc.ctr);
+    const prev = this._ansHlc && this._ansHlc.wall === W ? this._ansHlc.ctr : -1;
+    this._ansHlc = { wall: W, ctr: Math.max(prev, top) + 1 };
     e.dev = tag; e.hlc = { wall: W, ctr: this._ansHlc.ctr, dev: tag };
     // peers refuse an event over 256 KiB: say so instead of keeping an answer nobody gets (FR-10, as the core)
     if (!wellFormedEvent(e) || !sendable(e)) return { ok: false, error: "these answers are too long to send - shorten the longest ones" };   // W2-1: also small enough to SEND

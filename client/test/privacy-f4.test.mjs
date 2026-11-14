@@ -59,3 +59,30 @@ test("R8-2: the answer clock's counter continues after a restart in the same win
   const mine = b.log.filter((e) => e.type === "response.submit").map((e) => e.hlc);
   assert.ok(mine.length === 2 && mine[0].wall === mine[1].wall && new Set(mine.map((h) => h.ctr)).size === 2, JSON.stringify(mine));
 });
+
+test("ADR 0030: sealed answers of different forms have the same length within a size class", async () => {
+  const { peers: [a, b], pump } = await net(2);
+  const f1 = a.createForm({ title: "x", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
+  const f2 = a.createForm({ title: "a much longer title", questions: [{ id: "q1", type: "choice", text: "pick", options: ["red", "green"], required: true }] }).formId;
+  for (const f of [f1, f2]) b.importForm(`whisperbox://form?id=${f}&by=${a.identity.address}`);
+  pump();
+  assert.ok(b.submitResponse(f1, [{ questionId: "q1", value: "hi" }]).ok && b.submitResponse(f2, [{ questionId: "q1", value: "green" }]).ok);
+  const lens = b.log.filter((e) => e.type === "response.submit").map((e) => e.payload.encryptedPayload.length);
+  assert.ok(lens.length === 2 && lens[0] === lens[1], "same length: " + lens);
+  pump(); a.snapshot();
+  assert.strictEqual(a.decrypt(a.state()).responses[f2][0].answers[0].value, "green", "the creator reads it (pad ignored)");
+});
+
+test("ADR 0030: ASK gaps are jittered", async () => {
+  const gaps = new Set();
+  for (let i = 0; i < 3; i++) {
+    const { peers: [a, b], pump, advance, now } = await net(2);
+    a.offline = true;
+    const fid = a.createForm({ title: "x", questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
+    b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);
+    advance(30000);
+    gaps.add(b.askNextAt[fid] - now());
+    void pump;
+  }
+  assert.ok(gaps.size > 1, "different every time");
+});

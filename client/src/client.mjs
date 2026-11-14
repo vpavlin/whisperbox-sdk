@@ -23,6 +23,8 @@ export const NET_HLC_TOL_MS = 10 * 60 * 1000;
 export { TOPIC };
 // ── wire v2 (ADR 0024): every form lives on one of 16 bucket topics (same as the core's formTopic) ──
 export const WIRE_SHARD = "/waku/2/rs/2/1";
+/** Sealed answers are padded to one of these plaintext sizes (ADR 0030). */
+export const ANSWER_SIZE_CLASSES = [1024, 4096, 16384, 36864];
 export function wireTopicFor(formId) {
   return "/whisperbox/2/form-" + C.sha256Hex("whisperbox.bucket.v2" + String(formId).toLowerCase())[0] + "/proto";
 }
@@ -528,11 +530,14 @@ export class WhisperboxClient {
       // held - unless it is another creator's form under that id and the link names someone else (W2-7)
       const pin = this.pins[fid];
       if (st.forms[fid] && (!pin || lc(st.forms[fid].creator || "") === lc(pin))) { delete this.askCount[fid]; continue; }
-      if (this.askSentAt[fid] === undefined) this.askSentAt[fid] = now;
+      // jittered (anoncomms: fixed gaps pinned the link-open time): 10-30 s, then 10, 20, 60 min +/-30%
+      const r = () => parseInt(C.randomHex(2), 16) / 65535;
+      this.askNextAt = this.askNextAt || {};
+      if (this.askSentAt[fid] === undefined) { this.askSentAt[fid] = now; this.askNextAt[fid] = now + Math.floor(minute / 6 + (minute / 3) * r()); }
       const n = this.askCount[fid] || 0;
-      const gap = n === 0 ? minute / 3 : n === 1 ? 10 * minute : n === 2 ? 20 * minute : 60 * minute;
-      if (n >= 26 || now - this.askSentAt[fid] < gap) continue;
+      if (n >= 26 || now < (this.askNextAt[fid] ?? 0)) continue;
       this.askSentAt[fid] = now; this.askCount[fid] = n + 1;
+      this.askNextAt[fid] = now + Math.floor((n === 0 ? 10 : n === 1 ? 20 : 60) * minute * (0.7 + 0.6 * r()));
       askBuckets.add(bucketOf(fid));
     }
     for (const b of askBuckets) this.enqueue(4, "/whisperbox/2/form-" + b + "/proto", { v: 2, type: "ASK", bucket: b }, "ask:" + b);
@@ -1375,7 +1380,12 @@ export class WhisperboxClient {
     const inner = { signature: C.signInner(me, resp), pub: me.pubHex };
     // one-off key for private replies / quiz scores to this answer (re-derivable, unlinkable)
     const replyPub = C.deriveReplyKey(this.identity, formId, confirmationId).pubHex;
-    const sealed = C.toHex(C.sealToCreator(null, f.publicKey, JSON.stringify({ ...resp, ...inner, confirmationId, replyPub })));
+    // padded to a size class (1, 4, 16 or 36 KiB of plaintext): the sealed length used to tell which form
+    // a blob answers (privacy review F2; ADR 0030; as the core). `pad` is outside the inner signature.
+    const body = { ...resp, ...inner, confirmationId, replyPub };
+    const len = utf8Bytes(JSON.stringify(body));
+    for (const cls of ANSWER_SIZE_CLASSES) if (len + 9 <= cls) { body.pad = "0".repeat(cls - len - 9); break; }
+    const sealed = C.toHex(C.sealToCreator(null, f.publicKey, JSON.stringify(body)));
     const e = this.buildEvent(EventType.RESPONSE_SUBMIT, responseSubmitId(sealed), { encryptedPayload: sealed }, false);
     // A fresh random tag per answer on the wire (was sha256(deviceId|formId): the device id is public
     // in every signed event, so the tag linked anonymous answers to a device - review 2026-10-22, WB-5).
@@ -1485,7 +1495,7 @@ export class WhisperboxClient {
     if (!f) return { ok: false, error: "unknown form" };
     return { ok: true, uri: `whisperbox://form?id=${f.id}&by=${f.creator}` };
   }
-  resync() { if (!this.nodeReady) return { ok: false, error: "not connected" }; this.syncTopics(); this.pullAll(); for (const fid of this.watched) this.askSentAt[fid] = 0; return { ok: true }; }
+  resync() { if (!this.nodeReady) return { ok: false, error: "not connected" }; this.syncTopics(); this.pullAll(); for (const fid of this.watched) { this.askSentAt[fid] = 0; if (this.askNextAt) this.askNextAt[fid] = 0; } return { ok: true }; }
 
   // ── read side (same shape as the core's snapshot) ──────────────────────────────
   // Opening keys for MY forms, by sealing pubkey: the form's own derived key, or the identity

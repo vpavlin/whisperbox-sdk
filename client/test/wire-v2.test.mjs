@@ -53,22 +53,22 @@ test("an answer the creator missed goes out again until the receipt, then stops"
   assert.strictEqual(b.diag.txTotal, tx, "no more retries after the receipt");
 });
 
-test("no ASK (ADR 0028): a respondent missing a form sends nothing; the creator's re-publish brings it", async () => {
+test("ASK (ADR 0029): names only the bucket; only the creator side answers, at once; a bystander sends nothing", async () => {
   const { peers: [a, b, c], wire, pump, advance } = await net(3);
   b.offline = true;
   const fid = a.createForm(q).formId;
   c.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);
   pump();   // b missed the publish (and there is no Store here)
   b.offline = false;
-  const bTx = b.diag.txTotal, cTx = c.diag.txTotal;
+  const cTx = c.diag.txTotal;
+  const asks = []; const push = wire.push.bind(wire); wire.push = (m) => { if (m.from === b) asks.push(JSON.parse(new TextDecoder().decode(m.bytes))); return push(m); };
   b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`);
-  advance(5 * 60000);
-  assert.strictEqual(b.diag.txTotal, bTx, "b sends no ASK");
-  advance(85 * 60000);   // the hourly re-publish (+/-25%)
-  assert.ok(b.state().forms[fid], "the creator's re-publish brought the form");
-  assert.strictEqual(c.diag.txTotal, cTx, "a respondent holding the form sends nothing");
+  advance(30000);   // b's first ASK after 20 s
+  assert.ok(b.state().forms[fid], "the creator answered b's ASK with the form");
+  const ask = asks.find((x) => x.type === "ASK");
+  assert.ok(ask && !JSON.stringify(ask).includes(fid) && /^[0-9a-f]$/.test(ask.bucket), "the ASK names a bucket, not the form: " + JSON.stringify(ask));
+  assert.strictEqual(c.diag.txTotal, cTx, "a respondent holding the form never answers an ASK");
   assert.ok(wireTopicFor(fid).startsWith("/whisperbox/2/form-"));
-  void wire;
 });
 
 // Václav, 2026-11-13: "we should not store forms and answers we do not care about" (audit W2-2).

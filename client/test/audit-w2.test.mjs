@@ -2,7 +2,7 @@
 // "audit 2026-11-13 (wire v2)" block tests the same on the desktop core.
 import test from "node:test";
 import assert from "node:assert";
-import { WhisperboxClient, wireTopicFor, netMsOf, utf8Bytes, wellFormedEvent, MAX_WIRE_EVENT_BYTES } from "../src/client.mjs";
+import { bucketOf, WhisperboxClient, wireTopicFor, netMsOf, utf8Bytes, wellFormedEvent, MAX_WIRE_EVENT_BYTES } from "../src/client.mjs";
 import { wellFormedFormFields } from "../src/client.mjs";
 
 const mem = () => { const m = new Map(); return { get: async (k) => m.get(k) ?? null, set: async (k, v) => { m.set(k, v); } }; };
@@ -36,19 +36,22 @@ test("W2-1: nothing larger than Delivery can carry is made or sent", async () =>
   assert.strictEqual(MAX_WIRE_EVENT_BYTES, 80000);
 });
 
-test("W2-6/W2-3 (ADR 0028): ASKs are never answered, live or from Store", async () => {
+test("W2-6/W2-3 (ADR 0029): an ASK names only a bucket; a Store copy is never acted on; live ASKs cost the frame budget", async () => {
   const { peers: [a], wire } = await net(1);
   const fid = a.createForm(q).formId;
-  a.drain?.(); wire.length = 0;
-  const ask = bytes(JSON.stringify({ v: 2, type: "ASK", formId: fid }));
+  a.drain?.(); wire.length = 0; a.askAnsweredAt = {};
+  const ask = bytes(JSON.stringify({ v: 2, type: "ASK", bucket: bucketOf(fid) }));
   a.ingest([ask], { source: "history" });
-  for (let i = 0; i < 20; i++) a.ingest([ask]);
   a.drain?.();
-  assert.strictEqual(wire.length, 0, "the creator sends nothing for an ASK (no presence oracle, F5)");
-  assert.ok(a.diag.askIgnored >= 21);
+  assert.strictEqual(wire.length, 0, "a Store copy of an ASK makes the creator send nothing");
+  a.ingest([ask]); a.drain?.();
+  assert.ok(wire.length >= 1, "a live ASK for the bucket: the creator re-publishes its form there at once");
+  const c0 = a.diag.ctlDropBudget || 0;
+  for (let i = 0; i < 200; i++) a.ingest([ask]);
+  assert.ok((a.diag.ctlDropBudget || 0) > c0, "a flood of live ASKs runs out of the frame budget");
 });
 
-test("W2-7 (ADR 0028): a squatted form id doesn't stop the respondent; the creator's re-publish brings the real form", async () => {
+test("W2-7: a squatted form id doesn't stop the respondent asking; the real form wins", async () => {
   const { peers: [a, x, r], pump, advance } = await net(3);
   a.offline = true;
   assert.ok(a.createForm({ ...q, id: "form-5a5a5a5a" }).ok, "the real creator (offline) makes the form");
@@ -57,9 +60,9 @@ test("W2-7 (ADR 0028): a squatted form id doesn't stop the respondent; the creat
   pump();
   assert.strictEqual(r.state().forms["form-5a5a5a5a"]?.creator, x.identity.address, "only the squatter's form so far");
   a.offline = false;
-  advance(90 * 60000);   // the hourly re-publish (+/-25%)
+  advance(30 * 60000);
   const f = r.snapshot().state.forms["form-5a5a5a5a"];
-  assert.ok(f && f.creator === a.identity.address && f.canRespond, "the real creator's re-publish arrived: " + JSON.stringify(f?.creator));
+  assert.ok(f && f.creator === a.identity.address && f.canRespond, "it kept asking; the real creator answered: " + JSON.stringify(f?.creator));
 });
 
 test("W2-8: lengths are UTF-8 bytes and the close bounds match the core", () => {

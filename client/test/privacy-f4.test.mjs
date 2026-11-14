@@ -19,7 +19,7 @@ async function net(n) {
 }
 const answerSends = (wire, p) => wire.filter((m) => m.from === p).flatMap((m) => JSON.parse(new TextDecoder().decode(m.bytes)).events || []).filter((e) => e.type === "response.submit").length;
 
-for (const anonymous of [false, true]) test(`retries are jittered${anonymous ? " and stop after 5 on anonymous forms" : ""}`, async () => {
+for (const anonymous of [false, true]) test(`retries are jittered${anonymous ? " (anonymous forms too: an answer must not be lost, ADR 0029)" : ""}`, async () => {
   const { peers: [a, b], wire, pump, advance, now } = await net(2);
   const fid = a.createForm({ title: "f4", anonymous, questions: [{ id: "q1", type: "text", text: "?", required: true }] }).formId;
   b.importForm(`whisperbox://form?id=${fid}&by=${a.identity.address}`); pump();
@@ -31,8 +31,7 @@ for (const anonymous of [false, true]) test(`retries are jittered${anonymous ? "
   assert.ok(first >= 0.7 * 10 * 60000 - 30000 && first <= 1.3 * 10 * 60000, "the first retry is 7-13 min away: " + first);
   advance(8 * 3600000);
   const n = answerSends(log, b);
-  if (anonymous) assert.ok(n <= 6, "1 send + at most 5 retries: " + n);
-  else assert.ok(n >= 9, "the long schedule continues: " + n);
+  assert.ok(n >= 9, "the long schedule continues: " + n);
 });
 
 test("F3: an answer's HLC is the 10 minutes it was sent in; edits in one window keep their order", async () => {

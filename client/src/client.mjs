@@ -26,6 +26,8 @@ export const WIRE_SHARD = "/waku/2/rs/2/1";
 export function wireTopicFor(formId) {
   return "/whisperbox/2/form-" + C.sha256Hex("whisperbox.bucket.v2" + String(formId).toLowerCase())[0] + "/proto";
 }
+/** The bucket (one hex digit) a form lives in: all an ASK names (ADR 0029). */
+export const bucketOf = (formId) => C.sha256Hex("whisperbox.bucket.v2" + String(formId).toLowerCase())[0];
 export const isWireTopic = (t) => typeof t === "string" && t.startsWith("/whisperbox/2/form-");
 const formIdOfEvent = (e) => (e?.type === EventType.FORM_PUBLISH ? lc(e?.payload?.id ?? "") : lc(e?.payload?.formId ?? ""));
 const lc = (s) => String(s ?? "").toLowerCase();
@@ -479,6 +481,20 @@ export class WhisperboxClient {
     this.formSentAt[formId] = this.now();
     this.sendEvents(formId, evs, prio, "form:" + formId);
   }
+  // An ASK for a bucket (or an older peer's for a form: its bucket): the creator side re-publishes its
+  // open forms in that bucket, at most once per bucket per 10 min (ADR 0029)
+  onAsk(env) {
+    const b = typeof env.bucket === "string" && /^[0-9a-f]$/.test(env.bucket) ? env.bucket
+      : typeof env.formId === "string" && env.formId && env.formId.length <= 128 ? bucketOf(lc(env.formId)) : "";
+    if (!b) return;
+    this.askAnsweredAt = this.askAnsweredAt || {};
+    if (this.askAnsweredAt[b] && this.now() - this.askAnsweredAt[b] < 10 * this.minute) return;
+    const st = this.state(), who = this.identity?.address;
+    const mine = Object.values(st.forms).filter((f) => (f.creator === who || this.isCoOwner(f)) && f.status === "open" && bucketOf(f.id) === b);
+    if (!mine.length) return;   // only the creator side answers
+    this.askAnsweredAt[b] = this.now();
+    for (const f of mine) this.publishFormState(f.id, 3);
+  }
   // When the next retry of an answer is due after send number k (0 = the first): 10 min x5, hourly x4,
   // then 6-hourly, each +/-30% at random (privacy review F4; as the core)
   retryNextAt(k) {
@@ -503,9 +519,23 @@ export class WhisperboxClient {
       if (closed) this.formClosedSends[f.id] = (this.formClosedSends[f.id] || 0) + 1;
       this.publishFormState(f.id, 5);
     }
-    // no ASK any more (privacy review F1/F5, ADR 0028): it named the form in clear and made the creator
-    // answer at once (a presence oracle). A missing form comes from the Store pull (every 15 min) or the
-    // creator's hourly re-publish.
+    // A form opened from a link that hasn't arrived: ASK its BUCKET after 20 s, 10 min, 30 min, then
+    // hourly (ADR 0029). The bucket (1 of 16) is all it names, so the respondent's interest in one form
+    // stays hidden; the creator side answers at once - forms are public, its presence isn't worth a
+    // slow first load (Václav 2026-11-14).
+    const askBuckets = new Set();
+    for (const fid of this.watched) {
+      // held - unless it is another creator's form under that id and the link names someone else (W2-7)
+      const pin = this.pins[fid];
+      if (st.forms[fid] && (!pin || lc(st.forms[fid].creator || "") === lc(pin))) { delete this.askCount[fid]; continue; }
+      if (this.askSentAt[fid] === undefined) this.askSentAt[fid] = now;
+      const n = this.askCount[fid] || 0;
+      const gap = n === 0 ? minute / 3 : n === 1 ? 10 * minute : n === 2 ? 20 * minute : 60 * minute;
+      if (n >= 26 || now - this.askSentAt[fid] < gap) continue;
+      this.askSentAt[fid] = now; this.askCount[fid] = n + 1;
+      askBuckets.add(bucketOf(fid));
+    }
+    for (const b of askBuckets) this.enqueue(4, "/whisperbox/2/form-" + b + "/proto", { v: 2, type: "ASK", bucket: b }, "ask:" + b);
     const retryAt = [10, 20, 30, 40, 50, 110, 170, 230, 290];
     let dirty = false;
     for (const [fid, entry] of Object.entries(this.myAnswers)) {
@@ -515,7 +545,6 @@ export class WhisperboxClient {
         const first = a.submittedAt || 0;
         if (!first || now - first > 14 * 24 * 60 * minute) continue;
         const n = a.retries || 0;
-        if (a.sent && f.anonymous && n >= 5) continue;   // anonymous forms: about an hour of retries (F4, as the core)
         // due at the jittered time set when last sent (F4: +/-30%); older entries: the fixed schedule
         const due = !a.sent ? 0 : Number.isInteger(a.nextAt) ? a.nextAt : first + minute * (n < 9 ? retryAt[n] : 290 + 360 * (n - 8));
         if (now < due) continue;
@@ -569,7 +598,11 @@ export class WhisperboxClient {
       for (const e of [...env.events.filter(first), ...env.events.filter((x) => !first(x))]) { try { this.ingestOne(e, true); } catch { this.diag.rxBad = (this.diag.rxBad || 0) + 1; } }
       return true;
     }
-    if (env.type === "ASK") { this.diag.askIgnored = (this.diag.askIgnored || 0) + 1; return true; }   // older peers' ASK: never answered (ADR 0028)
+    if (env.type === "ASK") {   // a live ASK only, and it costs a frame token (audit W2-3/W2-6)
+      if (this._rxLive === false) return true;
+      if (!this.takeToken("ctl", 120)) { this.diag.ctlDropBudget = (this.diag.ctlDropBudget || 0) + 1; return true; }
+      this.onAsk(env); return true;
+    }
     return false;
   }
   /** One event from the network (live, Store or a bundle): checks, budget (live only; a copy we hold
@@ -1032,7 +1065,9 @@ export class WhisperboxClient {
 
   receiptDelay() {
     if (Number.isFinite(this.receiptDelayMs)) return this.receiptDelayMs;
-    return Math.floor(this.minute * (1 + 4 * (parseInt(C.randomHex(2), 16) / 65535)));   // 1-5 min
+    // 2-10 s: enough to send a confirm-all (and automatic receipts) as one event; the respondent sees
+    // its receipt at once (ADR 0029: a 1-5 min wait only hid the creator's timing)
+    return Math.floor(2000 + 8000 * (parseInt(C.randomHex(2), 16) / 65535));
   }
   // saved once per burst, not per confirmation (audit R8-5)
   saveOutbox() {
